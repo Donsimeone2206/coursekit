@@ -14,6 +14,14 @@
     "self-hosted"
   ],
   "license": "MIT",
+  "homepage": "https://github.com/Donsimeone2206/coursekit#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Donsimeone2206/coursekit.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Donsimeone2206/coursekit/issues"
+  },
   "type": "module",
   "bin": {
     "coursekit": "./dist/cli/index.js"
