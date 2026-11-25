@@ -1,5 +1,7 @@
 # Coursekit
 
+[![CI](https://github.com/Donsimeone2206/coursekit/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Donsimeone2206/coursekit/actions/workflows/ci.yml)
+
 **An open-source learning management system for Node.js.** Courses, lessons, assignments, auto-graded quizzes, forums and a gradebook, with a fast, modern interface. Think Moodle, rebuilt for today's web.
 
 ```bash
