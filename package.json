@@ -1,6 +1,6 @@
 {
   "name": "coursekit-lms",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Open-source learning management system for Node.js: courses, lessons, assignments, quizzes, forums and a gradebook, with a modern web UI.",
   "keywords": [
     "lms",

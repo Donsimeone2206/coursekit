@@ -123,7 +123,7 @@ Migrations run automatically on start (or explicitly with `coursekit migrate`). 
 
 ## Use it as a library
 
-Coursekit exports a programmatic API, so you can run it inside your own server, react to events or seed data from scripts. It is an ES module, and CommonJS code can `require('coursekit-lms')` too. Type definitions are included; TypeScript projects also need `@types/node`, which most Node projects already have. With TypeScript 5, `"module": "commonjs"` and `skipLibCheck` off, also set `esModuleInterop` (for zod's type definitions, which Coursekit's types use) and a `target` of ES2022 or newer (for kysely's).
+Coursekit exports a programmatic API, so you can run it inside your own server, react to events or seed data from scripts. It is an ES module, and CommonJS code can `require('coursekit-lms')` too. Type definitions are included; TypeScript projects also need `@types/node`, which most Node projects already have. With `skipLibCheck` off, the type definitions need TypeScript 5.7 or newer (Hono's use 5.7 features). With TypeScript 5, `"module": "commonjs"` and `skipLibCheck` off, also set `esModuleInterop` (for zod's type definitions, which Coursekit's types use) and a `target` of ES2022 or newer (for kysely's).
 
 ```ts
 import { createCoursekit } from 'coursekit-lms';

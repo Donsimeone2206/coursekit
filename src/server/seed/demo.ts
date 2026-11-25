@@ -31,12 +31,13 @@ import { gradeQuestion } from '../services/quiz.js';
 export interface SeedDemoOptions {
   /** An existing administrator for the demo. If omitted, the first admin is used (or one is created). */
   admin?: Pick<UserRow, 'id'> | undefined;
-  /** Password for all demo accounts. Defaults to a random one (admins can still use "Log in as"). */
+  /** Password for all demo accounts. Defaults to a random one, which the result returns. */
   password?: string | undefined;
 }
 
 export interface SeedDemoResult {
   created: boolean;
+  /** The password the demo accounts were given, or null when demo content was already loaded. */
   password: string | null;
   users: Array<{ name: string; email: string; role: string }>;
   courses: number;
@@ -1612,5 +1613,5 @@ export async function seedDemo(deps: Pick<AppDeps, 'db' | 'events'>, options: Se
   await insertChunks(db, 'calendarEvents', events);
   await insertChunks(db, 'notifications', notifications);
 
-  return { created: true, password: options.password ? password : null, users, courses: courses.length };
+  return { created: true, password, users, courses: courses.length };
 }
