@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Smoke-test the built CLI
+        run: |
+          node dist/cli/index.js seed --demo --data-dir ./ci-data
+          node dist/cli/index.js start --port 3100 --data-dir ./ci-data &
+          for i in $(seq 1 20); do curl -fs http://localhost:3100/api/health && break; sleep 0.5; done
+          curl -fs http://localhost:3100/ | grep -q '<div id="root">'
