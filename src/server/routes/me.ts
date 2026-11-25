@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Announcement, AppNotification, CalendarEvent, DashboardData, SearchResults, TimelineItem } from '../../shared/types.js';
 import { requireUser, type AppDeps, type AppEnv } from '../context.js';
-import type { DB } from '../db/index.js';
+import type { DB } from '../db/types.js';
 import type { CourseRow, UserRow } from '../db/schema.js';
 import { forbidden, notFound, readBody, readQuery } from '../lib/http.js';
 import { isoDateSchema } from '../lib/schemas.js';

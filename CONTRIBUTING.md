@@ -21,6 +21,7 @@ npm run format
 npm run typecheck
 npm test
 npm run build
+npm run check:package   # loads the built package with require() and import(), and type-checks test/consumer against it
 ```
 
 CI runs the same checks. Add or update tests in `test/` for any API behaviour you change.

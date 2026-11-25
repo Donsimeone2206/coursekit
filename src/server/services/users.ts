@@ -8,12 +8,12 @@ import { newId, now } from '../lib/util.js';
 export interface CreateUserInput {
   name: string;
   email: string;
-  password?: string | null;
+  password?: string | null | undefined;
   /** Pre-computed hash, e.g. when seeding many users with the same password. */
-  passwordHash?: string | null;
-  role?: SiteRole;
-  bio?: string | null;
-  avatarUrl?: string | null;
+  passwordHash?: string | null | undefined;
+  role?: SiteRole | undefined;
+  bio?: string | null | undefined;
+  avatarUrl?: string | null | undefined;
 }
 
 export function normalizeEmail(email: string): string {

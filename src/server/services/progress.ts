@@ -1,5 +1,5 @@
 import type { AppDeps } from '../context.js';
-import type { DB } from '../db/index.js';
+import type { DB } from '../db/types.js';
 import type { ActivityRow } from '../db/schema.js';
 import { now, num } from '../lib/util.js';
 

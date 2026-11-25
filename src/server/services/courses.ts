@@ -1,5 +1,5 @@
 import type { CourseSummary, PublicUser } from '../../shared/types.js';
-import type { DB } from '../db/index.js';
+import type { DB } from '../db/types.js';
 import type { CourseRow, UserRow } from '../db/schema.js';
 import { num, slugify } from '../lib/util.js';
 import { progressByCourse } from './progress.js';

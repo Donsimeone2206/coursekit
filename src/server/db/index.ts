@@ -4,9 +4,9 @@ import { Migrator, type Migration, type MigrationResult } from 'kysely/migration
 import * as initial from './migrations/001_initial.js';
 import { createNodeSqliteDatabase } from './node-sqlite.js';
 import type { Database } from './schema.js';
+import type { DB, DatabaseKind } from './types.js';
 
-export type DB = Kysely<Database>;
-export type DatabaseKind = 'sqlite' | 'postgres';
+export type { DB, DatabaseKind } from './types.js';
 
 /** Migrations are registered in code so they survive bundling. Append new ones; never edit old ones. */
 export const migrations: Record<string, Migration> = {

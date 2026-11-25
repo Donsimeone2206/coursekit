@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Gradebook, GradebookItem, GradebookRow, MyGrades } from '../../shared/types.js';
 import { requireUser, type AppDeps, type AppEnv } from '../context.js';
-import type { DB } from '../db/index.js';
+import type { DB } from '../db/types.js';
 import { badRequest, notFound, readBody } from '../lib/http.js';
 import { round } from '../lib/util.js';
 import { assertCan, loadCourseAccess, type CourseAccess } from '../services/access.js';

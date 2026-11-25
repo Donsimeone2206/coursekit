@@ -29,10 +29,10 @@ import { newId, randomToken, round } from '../lib/util.js';
 import { gradeQuestion } from '../services/quiz.js';
 
 export interface SeedDemoOptions {
-  /** Administrator that owns the demo. If omitted, the first admin is used (or one is created). */
-  admin?: UserRow;
+  /** An existing administrator for the demo. If omitted, the first admin is used (or one is created). */
+  admin?: Pick<UserRow, 'id'> | undefined;
   /** Password for all demo accounts. Defaults to a random one (admins can still use "Log in as"). */
-  password?: string;
+  password?: string | undefined;
 }
 
 export interface SeedDemoResult {
@@ -1015,11 +1015,10 @@ export async function seedDemo(deps: Pick<AppDeps, 'db' | 'events'>, options: Se
   const ts = new Date().toISOString();
 
   // People
-  let admin =
-    options.admin ?? (await db.selectFrom('users').selectAll().where('role', '=', 'admin').orderBy('createdAt').executeTakeFirst());
+  const existingAdmin = options.admin ?? (await db.selectFrom('users').select('id').where('role', '=', 'admin').executeTakeFirst());
   const users: SeedDemoResult['users'] = [];
-  if (!admin) {
-    admin = {
+  if (!existingAdmin) {
+    const admin: UserRow = {
       id: newId(),
       email: 'admin@coursekit.test',
       name: 'Ada Admin',

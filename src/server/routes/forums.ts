@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import type { CourseRole, Discussion, DiscussionDetail, Post } from '../../shared/types.js';
 import { requireUser, type AppContext, type AppDeps, type AppEnv } from '../context.js';
-import type { DB } from '../db/index.js';
+import type { DB } from '../db/types.js';
 import { badRequest, forbidden, notFound, readBody } from '../lib/http.js';
 import { markdownSchema } from '../lib/schemas.js';
 import { excerpt, newId, now, num } from '../lib/util.js';

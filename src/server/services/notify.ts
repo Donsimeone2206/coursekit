@@ -1,4 +1,4 @@
-import type { DB } from '../db/index.js';
+import type { DB } from '../db/types.js';
 import { newId, now } from '../lib/util.js';
 
 export interface NotificationInput {

@@ -5,12 +5,22 @@ import { Button } from './components/ui/button';
 import { PageLoader } from './components/ui/misc';
 import { errorMessage } from './lib/api';
 import { useSession } from './lib/session';
+import { reloadForNewVersion, waitForReload } from './lib/stale';
 import { LoginPage, RegisterPage, SetupPage } from './pages/auth/AuthPages';
 import DashboardPage from './pages/DashboardPage';
 
 /** Route-level code splitting: each page loads on first visit. */
 function page<M extends Record<string, unknown>>(factory: () => Promise<M>, name: keyof M = 'default') {
-  const Component = lazy(async () => ({ default: (await factory())[name] as ComponentType }));
+  const Component = lazy(async () => {
+    try {
+      return { default: (await factory())[name] as ComponentType };
+    } catch (err) {
+      // The page file belongs to an older build that is gone: load the new build instead of failing.
+      // (Vite's preload errors arrive here too: nothing calls preventDefault on `vite:preloadError`.)
+      if (reloadForNewVersion()) return waitForReload(err);
+      throw err;
+    }
+  });
   return (
     <Suspense fallback={<PageLoader />}>
       <Component />

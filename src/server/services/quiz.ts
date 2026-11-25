@@ -1,6 +1,6 @@
 import type { AttemptAnswer, Question, QuestionResult, QuizAttempt, QuizSettings } from '../../shared/types.js';
 import type { AppDeps } from '../context.js';
-import type { DB } from '../db/index.js';
+import type { DB } from '../db/types.js';
 import type { ActivityRow, CourseRow, QuestionRow, QuizAttemptRow } from '../db/schema.js';
 import { badRequest, forbidden } from '../lib/http.js';
 import { newId, now, num, parseJson, round } from '../lib/util.js';

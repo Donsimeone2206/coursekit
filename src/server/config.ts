@@ -3,21 +3,21 @@ import { defaultWebDir } from './paths.js';
 
 export interface CoursekitOptions {
   /** `sqlite://./data/coursekit.db` (default), `sqlite::memory:` or a `postgres://` URL. */
-  databaseUrl?: string;
+  databaseUrl?: string | undefined;
   /** Folder for uploaded files and the default SQLite database. Defaults to `./data`. */
-  dataDir?: string;
-  port?: number;
-  host?: string;
+  dataDir?: string | undefined;
+  port?: number | undefined;
+  host?: string | undefined;
   /** Public URL of the site. An https URL turns on secure cookies. */
-  publicUrl?: string;
+  publicUrl?: string | undefined;
   /** Maximum upload size in megabytes. Defaults to 50. */
-  maxUploadMb?: number;
+  maxUploadMb?: number | undefined;
   /** Folder with the built web UI. `false` serves the API only. */
-  webDir?: string | false;
+  webDir?: string | false | undefined;
   /** Run pending database migrations on startup. Defaults to true. */
-  migrate?: boolean;
+  migrate?: boolean | undefined;
   /** Log each request to the console. */
-  logRequests?: boolean;
+  logRequests?: boolean | undefined;
 }
 
 export interface ResolvedConfig {

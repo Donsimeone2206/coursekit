@@ -1,6 +1,6 @@
 import { getCourseCapabilities, type CourseCapability } from '../../shared/permissions.js';
 import type { CourseRole } from '../../shared/types.js';
-import type { DB } from '../db/index.js';
+import type { DB } from '../db/types.js';
 import type { ActivityRow, CourseRow, EnrolmentRow, UserRow } from '../db/schema.js';
 import { forbidden, notFound } from '../lib/http.js';
 

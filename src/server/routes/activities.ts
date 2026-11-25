@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import type { ActivityDetail, ActivityNavItem, ActivitySettingsMap, FileInfo, Grade, PublicUser, Submission } from '../../shared/types.js';
 import { requireUser, type AppDeps, type AppEnv } from '../context.js';
-import type { DB } from '../db/index.js';
+import type { DB } from '../db/types.js';
 import type { ActivityRow, GradeRow, SubmissionRow } from '../db/schema.js';
 import { badRequest, forbidden, notFound, readBody } from '../lib/http.js';
 import { isoDateSchema, markdownSchema } from '../lib/schemas.js';

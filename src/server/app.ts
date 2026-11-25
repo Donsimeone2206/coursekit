@@ -26,6 +26,11 @@ import { quizRoutes } from './routes/quizzes.js';
 
 const JSON_LIMIT = 5 * 1024 * 1024;
 
+/** Build assets and anything whose last path segment has a file extension. App routes never do. */
+function isFileRequest(path: string): boolean {
+  return path.startsWith('/assets/') || /\.[a-z0-9]+$/i.test(path.slice(path.lastIndexOf('/') + 1));
+}
+
 function errorBody(message: string, code: string, issues?: ApiErrorBody['error']['issues']): ApiErrorBody {
   return { error: { message, code, ...(issues ? { issues } : {}) } };
 }
@@ -109,8 +114,10 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
         },
       }),
     );
-    // Every other GET is a client-side route of the single-page app.
+    // Every other GET is a client-side route of the single-page app, except requests for files:
+    // a missing build file (e.g. an old chunk requested by a tab opened before an upgrade) is a real 404.
     app.get('*', (c) => {
+      if (isFileRequest(c.req.path)) return c.notFound();
       c.header('Cache-Control', 'no-cache');
       return c.html(indexHtml);
     });

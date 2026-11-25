@@ -1,6 +1,6 @@
 import type { Context } from 'hono';
 import type { ResolvedConfig } from './config.js';
-import type { DB, DatabaseKind } from './db/index.js';
+import type { DB, DatabaseKind } from './db/types.js';
 import type { SessionRow, UserRow } from './db/schema.js';
 import type { EventBus } from './lib/events.js';
 import { forbidden, unauthorized } from './lib/http.js';

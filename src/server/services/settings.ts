@@ -1,6 +1,6 @@
 import { DEFAULT_BRAND_COLOR } from '../../shared/constants.js';
 import type { SiteSettings } from '../../shared/types.js';
-import type { DB } from '../db/index.js';
+import type { DB } from '../db/types.js';
 
 export const DEFAULT_SITE_SETTINGS: SiteSettings = {
   name: 'Coursekit',

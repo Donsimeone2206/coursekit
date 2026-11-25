@@ -1,3 +1,4 @@
+/// <reference types="node" preserve="true" />
 /**
  * Coursekit: an open-source learning management system for Node.js.
  *
@@ -16,17 +17,19 @@ import type { Hono } from 'hono';
 import { createApp } from './app.js';
 import { resolveConfig, type CoursekitOptions, type ResolvedConfig } from './config.js';
 import type { AppEnv } from './context.js';
-import { createDatabase, migrateToLatest, type DB, type DatabaseKind } from './db/index.js';
-import type { UserRow } from './db/schema.js';
+import { createDatabase, migrateToLatest } from './db/index.js';
+import type { DB, DatabaseKind } from './db/types.js';
+import type { User } from '../shared/types.js';
 import { EventBus } from './lib/events.js';
 import { createLocalStorage, type FileStorage } from './lib/storage.js';
 import { packageVersion } from './paths.js';
 import { seedDemo, type SeedDemoOptions, type SeedDemoResult } from './seed/demo.js';
+import { toUser } from './services/serialize.js';
 import { createUser, type CreateUserInput } from './services/users.js';
 
 export interface CreateCoursekitOptions extends CoursekitOptions {
   /** Custom file storage (S3, R2, ...). Defaults to `<dataDir>/uploads` on disk. */
-  storage?: FileStorage;
+  storage?: FileStorage | undefined;
 }
 
 export interface Coursekit {
@@ -45,7 +48,8 @@ export interface Coursekit {
   /** Start an HTTP server. Resolves once it is listening. */
   listen(port?: number, host?: string): Promise<{ server: Server; port: number; url: string }>;
   migrate(): Promise<void>;
-  createUser(input: CreateUserInput): Promise<UserRow>;
+  /** Creates an account. Returns the public user (never the password hash). */
+  createUser(input: CreateUserInput): Promise<User>;
   seedDemo(options?: SeedDemoOptions): Promise<SeedDemoResult>;
   close(): Promise<void>;
 }
@@ -85,7 +89,7 @@ export async function createCoursekit(options: CreateCoursekitOptions = {}): Pro
     async migrate() {
       await migrateToLatest(db);
     },
-    createUser: (input) => createUser(deps, input),
+    createUser: async (input) => toUser(await createUser(deps, input)),
     seedDemo: (opts) => seedDemo(deps, opts),
     async close() {
       await Promise.all(servers.map((s) => new Promise<void>((resolve) => s.close(() => resolve()))));
@@ -100,5 +104,9 @@ export { EventBus, type CoursekitEvents, type EventName } from './lib/events.js'
 export { createLocalStorage, type FileStorage } from './lib/storage.js';
 export { activityTypes, type ActivityTypeDefinition } from './services/activity-types.js';
 export type { Database } from './db/schema.js';
+export type { DB, DatabaseKind } from './db/types.js';
+export type { AppDeps, AppEnv } from './context.js';
+export type { CreateUserInput } from './services/users.js';
+export type { SeedDemoOptions, SeedDemoResult } from './seed/demo.js';
 export type * from '../shared/types.js';
 export { COURSE_CAPABILITIES, ROLE_CAPABILITIES, getCourseCapabilities, type CourseCapability } from '../shared/permissions.js';

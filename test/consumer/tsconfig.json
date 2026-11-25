@@ -1,0 +1,15 @@
+{
+  // Type-checks code written against the *built* package, the way consumers see it.
+  // Strict consumer settings on purpose: TypeScript 7's default "types": [] (no @types/node listed)
+  // and exactOptionalPropertyTypes. Run after `npm run build`.
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "strict": true,
+    "exactOptionalPropertyTypes": true,
+    "types": [],
+    "noEmit": true
+  },
+  "files": ["esm.ts", "cjs.cts"]
+}
