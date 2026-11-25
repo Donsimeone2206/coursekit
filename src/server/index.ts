@@ -2,7 +2,7 @@
  * Coursekit: an open-source learning management system for Node.js.
  *
  * ```ts
- * import { createCoursekit } from 'coursekit';
+ * import { createCoursekit } from 'coursekit-lms';
  *
  * const lms = await createCoursekit({ databaseUrl: 'sqlite://./data/lms.db' });
  * lms.events.on('grade.updated', (e) => console.log('graded', e));

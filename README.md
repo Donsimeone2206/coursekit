@@ -5,7 +5,7 @@
 **An open-source learning management system for Node.js.** Courses, lessons, assignments, auto-graded quizzes, forums and a gradebook, with a fast, modern interface. Think Moodle, rebuilt for today's web.
 
 ```bash
-npx coursekit start
+npx coursekit-lms start
 ```
 
 Open http://localhost:3000 and the setup wizard walks you through creating your site, with optional demo content.
@@ -55,10 +55,10 @@ Open http://localhost:3000 and the setup wizard walks you through creating your 
 
 ### Run it
 
-Requires Node.js 22.13 or newer.
+Requires Node.js 22.13 or newer. The npm package is called `coursekit-lms`; once it's installed, the command is `coursekit`.
 
 ```bash
-npx coursekit start
+npx coursekit-lms start
 ```
 
 Data (the SQLite database and uploads) is stored in `./data`. The first visit shows a setup wizard that creates the administrator account and can load demo content.
@@ -66,7 +66,7 @@ Data (the SQLite database and uploads) is stored in `./data`. The first visit sh
 ### Create a site folder
 
 ```bash
-npx coursekit init my-school --demo
+npx coursekit-lms init my-school --demo
 cd my-school
 npm install
 npm start
@@ -77,7 +77,7 @@ npm start
 ### Try the demo
 
 ```bash
-npx coursekit seed --demo
+npx coursekit-lms seed --demo
 ```
 
 This adds six courses, two teachers, a teaching assistant and twelve students with submissions, quiz attempts, grades and forum threads. Every demo account uses the password `coursekit`. It is meant for local evaluation only, so don't load it on a public site.
@@ -126,7 +126,7 @@ Migrations run automatically on start (or explicitly with `coursekit migrate`). 
 Coursekit exports a programmatic API, so you can run it inside your own server, react to events or seed data from scripts.
 
 ```ts
-import { createCoursekit } from 'coursekit';
+import { createCoursekit } from 'coursekit-lms';
 
 const lms = await createCoursekit({
   databaseUrl: process.env.DATABASE_URL,

@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { parseArgs, styleText } from 'node:util';
 import { createCoursekit, type CreateCoursekitOptions } from '../server/index.js';
-import { packageVersion } from '../server/paths.js';
+import { packageName, packageVersion } from '../server/paths.js';
 
 const bold = (s: string) => styleText('bold', s);
 const dim = (s: string) => styleText('dim', s);
@@ -37,9 +37,9 @@ ${bold('Options')}
   -h, --help               Show this help
 
 ${bold('Examples')}
-  npx coursekit start
-  npx coursekit init my-school --demo
-  DATABASE_URL=postgres://localhost/lms npx coursekit start
+  npx coursekit-lms start
+  npx coursekit-lms init my-school --demo
+  DATABASE_URL=postgres://localhost/lms coursekit start
 `;
 
 function loadEnv() {
@@ -135,7 +135,7 @@ async function main() {
         private: true,
         type: 'module',
         scripts: { start: 'coursekit start', migrate: 'coursekit migrate' },
-        dependencies: { coursekit: `^${packageVersion()}` },
+        dependencies: { [packageName()]: `^${packageVersion()}` },
       };
       writeFileSync('package.json', `${JSON.stringify(pkg, null, 2)}\n`);
     }
