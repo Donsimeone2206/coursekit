@@ -24,6 +24,8 @@ import { EventBus } from './lib/events.js';
 import { createLocalStorage, type FileStorage } from './lib/storage.js';
 import { packageVersion } from './paths.js';
 import { seedDemo, type SeedDemoOptions, type SeedDemoResult } from './seed/demo.js';
+import { createEmailService, type CoursekitEmail } from './services/email/service.js';
+import { startCompletionEngine } from './services/completion.js';
 import { toUser } from './services/serialize.js';
 import { createUser, type CreateUserInput } from './services/users.js';
 
@@ -51,6 +53,8 @@ export interface Coursekit {
   /** Creates an account. Returns the public user (never the password hash). */
   createUser(input: CreateUserInput): Promise<User>;
   seedDemo(options?: SeedDemoOptions): Promise<SeedDemoResult>;
+  /** Outgoing email: digests, delivery of the outbox and test messages (no-ops while email is off). */
+  email: CoursekitEmail;
   close(): Promise<void>;
 }
 
@@ -63,7 +67,9 @@ export async function createCoursekit(options: CreateCoursekitOptions = {}): Pro
   const storage = options.storage ?? createLocalStorage(join(config.dataDir, 'uploads'));
   const version = packageVersion();
   const deps = { db, dbKind: kind, config, events, storage, version };
+  const email = createEmailService(deps);
   const app = createApp(deps);
+  const completion = startCompletionEngine(deps);
   const servers: Server[] = [];
 
   return {
@@ -91,8 +97,11 @@ export async function createCoursekit(options: CreateCoursekitOptions = {}): Pro
     },
     createUser: async (input) => toUser(await createUser(deps, input)),
     seedDemo: (opts) => seedDemo(deps, opts),
+    email,
     async close() {
       await Promise.all(servers.map((s) => new Promise<void>((resolve) => s.close(() => resolve()))));
+      await completion.stop(); // may still queue notification emails
+      await email.close();
       await db.destroy();
     },
   };
@@ -108,5 +117,9 @@ export type { DB, DatabaseKind } from './db/types.js';
 export type { AppDeps, AppEnv } from './context.js';
 export type { CreateUserInput } from './services/users.js';
 export type { SeedDemoOptions, SeedDemoResult } from './seed/demo.js';
+export type { EmailMessage, EmailOptions, EmailTransport, ResolvedEmailConfig } from './services/email/config.js';
+export type { CoursekitEmail, DigestRunResult, OutboxRunResult } from './services/email/service.js';
+export type * from '../shared/email.js';
 export type * from '../shared/types.js';
+export type * from '../shared/completion.js';
 export { COURSE_CAPABILITIES, ROLE_CAPABILITIES, getCourseCapabilities, type CourseCapability } from '../shared/permissions.js';

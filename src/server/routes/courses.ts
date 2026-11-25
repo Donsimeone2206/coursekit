@@ -11,8 +11,11 @@ import { likePattern, newId, now, num } from '../lib/util.js';
 import { assertCan, assertWritable, loadCourseAccess } from '../services/access.js';
 import { parseSettings } from '../services/activity-types.js';
 import { summarizeCourses, uniqueCourseSlug } from '../services/courses.js';
+import { enrolUsers } from '../services/enrolments.js';
+import { findVisibleGroup, groupMemberIds, groupsByUser, groupsOfUser } from '../services/groups.js';
 import { courseMemberIds, notify } from '../services/notify.js';
 import { progressByUser } from '../services/progress.js';
+import { quizTotals } from '../services/quiz-slots.js';
 import { toCourseRef, toPublicUser } from '../services/serialize.js';
 import { normalizeEmail } from '../services/users.js';
 
@@ -190,14 +193,7 @@ export function courseRoutes(deps: AppDeps) {
     const quizIds = activities.filter((a) => a.type === 'quiz').map((a) => a.id);
     const forumIds = activities.filter((a) => a.type === 'forum').map((a) => a.id);
     const [questionCounts, discussionCounts, completions] = await Promise.all([
-      quizIds.length
-        ? db
-            .selectFrom('questions')
-            .select(['activityId', (eb) => eb.fn.countAll().as('n')])
-            .where('activityId', 'in', quizIds)
-            .groupBy('activityId')
-            .execute()
-        : [],
+      quizTotals(db, quizIds),
       forumIds.length
         ? db
             .selectFrom('discussions')
@@ -257,6 +253,7 @@ export function courseRoutes(deps: AppDeps) {
       enrolmentKey: access.can('course:update') ? course.enrolmentKey : null,
       canEnrol: !access.enrolment && course.visibility === 'published' && course.enrolment !== 'invite',
       outlineOnly: !canView,
+      myGroups: canView ? await groupsOfUser(db, course.id, user.id) : [],
     };
     return c.json(detail);
   });
@@ -335,6 +332,8 @@ export function courseRoutes(deps: AppDeps) {
     const access = await loadCourseAccess(db, user, c.req.param('courseId'));
     assertCan(access, 'course:viewParticipants');
     const manage = access.can('course:manageParticipants') || access.can('grades:viewAll');
+    const { groupId } = readQuery(c, z.object({ groupId: z.string().max(40).optional() }));
+    const group = groupId ? await findVisibleGroup(db, access, groupId) : null;
     const rows = await db
       .selectFrom('enrolments')
       .innerJoin('users', 'users.id', 'enrolments.userId')
@@ -351,8 +350,10 @@ export function courseRoutes(deps: AppDeps) {
       ])
       .where('enrolments.courseId', '=', access.course.id)
       .$if(!manage, (q) => q.where('enrolments.status', '=', 'active'))
+      .$if(!!group, (q) => q.where('enrolments.userId', 'in', groupMemberIds(db, group!.id)))
       .orderBy('users.name', 'asc')
       .execute();
+    const groups = await groupsByUser(db, access);
     const progress = manage
       ? await progressByUser(
           db,
@@ -370,6 +371,7 @@ export function courseRoutes(deps: AppDeps) {
         enrolledAt: row.createdAt,
         lastAccessAt: manage ? row.lastAccessAt : null,
         progress: row.role === 'student' && manage ? (progress.get(row.id) ?? 0) : null,
+        groups: groups.get(row.id) ?? [],
       }))
       .sort((a, b) => rolesOrder[a.role] - rolesOrder[b.role]);
     return c.json(participants);
@@ -395,37 +397,10 @@ export function courseRoutes(deps: AppDeps) {
       .execute();
     const enrolled = new Set(existing.map((e) => e.userId));
 
-    const ts = now();
     const toAdd = users.filter((u) => !enrolled.has(u.id));
-    if (toAdd.length) {
-      await db
-        .insertInto('enrolments')
-        .values(
-          toAdd.map((u) => ({
-            id: newId(),
-            courseId: access.course.id,
-            userId: u.id,
-            role: input.role,
-            status: 'active' as const,
-            lastAccessAt: null,
-            createdAt: ts,
-          })),
-        )
-        .execute();
-      await notify(
-        db,
-        toAdd.map((u) => u.id),
-        {
-          type: 'enrolment',
-          title: `You were added to ${access.course.title}`,
-          body: `${user.name} enrolled you as a ${input.role === 'assistant' ? 'teaching assistant' : input.role}.`,
-          link: `/courses/${access.course.slug}`,
-        },
-      );
-      for (const u of toAdd) events.emit('enrolment.created', { courseId: access.course.id, userId: u.id, role: input.role });
-    }
+    const added = await enrolUsers(deps, { course: access.course, userIds: toAdd.map((u) => u.id), role: input.role, actor: user });
     return c.json({
-      added: toAdd.length,
+      added: added.length,
       alreadyEnrolled: users.filter((u) => enrolled.has(u.id)).map((u) => u.email),
       notFound: emails.filter((e) => !found.has(e)),
     });

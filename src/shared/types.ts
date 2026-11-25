@@ -10,7 +10,7 @@ export type CourseVisibility = 'draft' | 'published' | 'archived';
 export type EnrolmentMethod = 'open' | 'key' | 'invite';
 export type ActivityType = 'lesson' | 'resource' | 'assignment' | 'quiz' | 'forum';
 export type CompletionMode = 'none' | 'manual' | 'auto';
-export type QuestionType = 'single' | 'multiple' | 'truefalse' | 'short' | 'numeric';
+export type QuestionType = 'single' | 'multiple' | 'truefalse' | 'short' | 'numeric' | 'essay' | 'matching' | 'ordering';
 
 export interface PublicUser {
   id: string;
@@ -87,6 +87,8 @@ export interface CourseDetail extends CourseSummary {
   canEnrol: boolean;
   /** True when the viewer can only see the outline (not enrolled). */
   outlineOnly: boolean;
+  /** The viewer's own groups in this course. */
+  myGroups?: GroupRef[];
 }
 
 export interface Section {
@@ -191,7 +193,8 @@ export interface Submission {
 export interface QuizAttemptSummary {
   id: string;
   attemptNumber: number;
-  status: 'in_progress' | 'finished';
+  /** `needs_grading`: submitted, waiting for a teacher to mark essays (the score is pending). */
+  status: 'in_progress' | 'needs_grading' | 'finished';
   startedAt: string;
   finishedAt: string | null;
   score: number | null;
@@ -206,6 +209,8 @@ export interface QuizInfo {
   attemptsUsed: number;
   canAttempt: boolean;
   inProgressAttemptId: string | null;
+  /** Staff only: students' attempts waiting for essays to be marked. */
+  needsGrading?: number;
 }
 
 export interface ActivityDetail<T extends ActivityType = ActivityType> extends ActivitySummary {
@@ -242,17 +247,33 @@ export interface Question {
   type: QuestionType;
   prompt: string;
   points: number;
+  /** Choices; for ordering, the items (shown order during an attempt, right order for editors and in review). */
   options: QuestionOption[];
   /** short/numeric: accepted answers (editors and review only). */
   acceptedAnswers?: string[];
   /** numeric: allowed +/- error (editors and review only). */
   tolerance?: number | null;
   explanation?: string | null;
+  /** matching: the items to match; `answer` and `answerId` only for editors and in review. */
+  pairs?: MatchPair[];
+  /** matching: the answers to choose from, in display order (distractors included). */
+  choices?: QuestionOption[];
+  /** matching: extra wrong answers (editors only). */
+  distractors?: string[];
+  /** essay: suggested length. */
+  minWords?: number | null;
+  maxWords?: number | null;
+  /** essay: information for graders (staff only, never sent to students). */
+  graderNotes?: string | null;
 }
 
 export interface AttemptAnswer {
   optionIds?: string[];
   text?: string;
+  /** ordering: item ids in the student's order. */
+  order?: string[];
+  /** matching: chosen answer id for each item id. */
+  matches?: Record<string, string>;
 }
 
 export interface QuestionResult {
@@ -260,6 +281,12 @@ export interface QuestionResult {
   partial: boolean;
   points: number;
   maxPoints: number;
+  /** essay: waiting for a teacher's mark. */
+  pending?: boolean;
+  /** Manual grading: the grader's comment for the student. */
+  comment?: string | null;
+  gradedBy?: PublicUser | null;
+  gradedAt?: string | null;
 }
 
 export interface QuizAttempt extends QuizAttemptSummary {
@@ -271,8 +298,13 @@ export interface QuizAttempt extends QuizAttemptSummary {
   answers: Record<string, AttemptAnswer>;
   /** Whether correct answers are included. */
   review: boolean;
+  /** Per-question results; without review only manually graded (essay) results are included. */
   results: Record<string, QuestionResult> | null;
   passingPercent: number | null;
+  /** Essays still waiting for a mark. */
+  pendingCount: number;
+  /** The viewer may mark essays in this attempt. */
+  canGrade: boolean;
 }
 
 export interface Discussion {
@@ -325,6 +357,8 @@ export interface Participant {
   enrolledAt: string;
   lastAccessAt: string | null;
   progress: number | null;
+  /** The person's groups, limited to the groups the viewer may see (students only see their own). */
+  groups?: GroupRef[];
 }
 
 export interface GradebookItem {
@@ -333,19 +367,29 @@ export interface GradebookItem {
   type: ActivityType;
   maxGrade: number;
   dueAt: string | null;
+  /** The grade category the item counts in (the default category's id is the course id). */
+  categoryId: string;
+  /** Weight within its category in weighted aggregation; null means "by points" (the item's max grade). */
+  weight: number | null;
 }
 
 export interface GradebookCell {
   score: number | null;
   feedback: string | null;
+  /** Left out of the totals by its category's "drop the lowest" rule. */
+  dropped: boolean;
 }
 
 export interface GradebookRow {
   user: PublicUser & { email: string };
   cells: Record<string, GradebookCell>;
+  /** Points earned and possible on the work that counts (after drop-lowest). The natural total is total / max. */
   total: number;
   max: number;
+  /** The course total, 0-100 with 2 decimals, or null when nothing is graded yet. */
   percentage: number | null;
+  /** Category subtotals, keyed by category id. */
+  categories: Record<string, GradeCategoryResult>;
 }
 
 export interface Gradebook {
@@ -353,13 +397,74 @@ export interface Gradebook {
   rows: GradebookRow[];
   averages: Record<string, number | null>;
   courseAverage: number | null;
+  aggregation: GradeAggregation;
+  /** Every category in order, including the default one (even when empty). */
+  categories: GradeCategory[];
+  /** Average category subtotal per category id. */
+  categoryAverages: Record<string, number | null>;
 }
 
 export interface MyGrades {
-  items: Array<GradebookItem & { score: number | null; feedback: string | null; gradedAt: string | null }>;
+  items: Array<GradebookItem & { score: number | null; feedback: string | null; gradedAt: string | null; dropped: boolean }>;
   total: number;
   max: number;
   percentage: number | null;
+  aggregation: GradeAggregation;
+  categories: Array<GradeCategory & GradeCategoryResult>;
+}
+
+/**
+ * How the course total is calculated. "natural" adds up points (what 0.1.x did, and the default);
+ * "weighted" makes each category worth a share of the total.
+ */
+export type GradeAggregation = 'natural' | 'weighted';
+
+export interface GradeCategory {
+  id: string;
+  name: string;
+  /** Share of the course total in weighted aggregation, 0-100. Normalised over the categories that have grades. */
+  weight: number;
+  /** Leave out this many of the lowest graded items (at least one graded item always counts). */
+  dropLowest: number;
+  position: number;
+  /** Activities that aren't assigned to a category count here. Its id is the course id and it can't be deleted. */
+  isDefault: boolean;
+}
+
+export interface GradeCategoryResult {
+  /** Category subtotal, 0-100 with 2 decimals, or null when nothing in it counts yet. */
+  percentage: number | null;
+  /** Points earned and possible on the items that count (after drop-lowest). Weighted courses may also use item weights. */
+  earned: number;
+  possible: number;
+  /** Share of the course total this category carries right now (0-100), or null when it doesn't count. */
+  share: number | null;
+}
+
+/** A graded activity as the gradebook setup sees it. */
+export interface GradeItemSetting {
+  activityId: string;
+  title: string;
+  type: ActivityType;
+  maxGrade: number;
+  visible: boolean;
+  sectionTitle: string;
+  categoryId: string;
+  weight: number | null;
+}
+
+export interface GradebookSetup {
+  aggregation: GradeAggregation;
+  categories: GradeCategory[];
+  /** Every graded activity (hidden ones too) in course order. */
+  items: GradeItemSetting[];
+}
+
+/** Body of `PUT /courses/:id/grades/setup`. Categories are listed in display order; new ones use any temporary id. */
+export interface GradebookSetupInput {
+  aggregation: GradeAggregation;
+  categories: Array<{ id: string; name: string; weight: number; dropLowest: number }>;
+  items?: Array<{ activityId: string; categoryId: string; weight: number | null }>;
 }
 
 export interface TimelineItem {
@@ -463,4 +568,174 @@ export interface ApiErrorBody {
     code: string;
     issues?: Array<{ path: string; message: string }>;
   };
+}
+
+export interface GroupRef {
+  id: string;
+  name: string;
+}
+
+export interface GroupMember extends PublicUser {
+  role: CourseRole;
+  status: 'active' | 'suspended';
+}
+
+export interface CourseGroup extends GroupRef {
+  description: string;
+  /** Enrolled members. Students only see the active members of their own groups. */
+  members: GroupMember[];
+  createdAt: string;
+}
+
+export interface CourseGroups {
+  groups: CourseGroup[];
+  /** Whether the viewer can create, rename and delete groups and change who is in them. */
+  canManage: boolean;
+  /** False when the viewer only sees the groups they belong to (students). */
+  allGroups: boolean;
+}
+
+export interface GroupMembersAdded {
+  /** User ids added to the group. */
+  added: string[];
+  alreadyMembers: string[];
+  /** Ids of people who aren't enrolled in the course, so can't join its groups. */
+  notEnrolled: string[];
+}
+
+export interface CohortSummary {
+  id: string;
+  name: string;
+  description: string;
+  memberCount: number;
+  /** Courses the cohort is linked to. */
+  courseCount: number;
+  createdAt: string;
+}
+
+export interface CohortLink {
+  id: string;
+  cohort: { id: string; name: string; memberCount: number };
+  course: CourseRef;
+  /** The course role linked members are enrolled with. */
+  role: CourseRole;
+  createdAt: string;
+}
+
+export interface CohortDetail extends CohortSummary {
+  links: CohortLink[];
+}
+
+export interface CohortMember extends PublicUser {
+  email: string;
+  status: UserStatus;
+  addedAt: string;
+}
+
+/** A person found when searching for people to add to a cohort. */
+export interface CohortCandidate extends PublicUser {
+  email: string;
+  member: boolean;
+}
+
+export interface CohortMembersAdded {
+  added: number;
+  /** Emails (or ids) of people who were already in the cohort. */
+  alreadyMembers: string[];
+  /** Emails (or ids) with no account on the site. */
+  notFound: string[];
+  /** Entries that aren't email addresses. */
+  invalid: string[];
+  /** New course enrolments made through the cohort's linked courses. */
+  enrolled: number;
+}
+
+export interface CohortOption {
+  id: string;
+  name: string;
+  memberCount: number;
+}
+
+export interface MatchPair {
+  id: string;
+  text: string;
+  /** The matching answer (editors and review only). */
+  answer?: string;
+  /** Id of the right choice (review only). */
+  answerId?: string;
+}
+
+export interface QuestionCategory {
+  id: string;
+  courseId: string;
+  parentId: string | null;
+  name: string;
+  description: string;
+  position: number;
+  /** Questions directly in this category. */
+  questionCount: number;
+  createdAt: string;
+}
+
+export interface QuestionUsage {
+  activityId: string;
+  title: string;
+  /** `question`: added to the quiz; `random`: in the pool of one of its random slots. */
+  kind: 'question' | 'random';
+}
+
+/** A question bank entry with its answers (staff only). */
+export interface BankQuestion extends Question {
+  name: string;
+  categoryId: string;
+  createdAt: string;
+  updatedAt: string;
+  usage: QuestionUsage[];
+}
+
+export interface BankQuestionSummary {
+  id: string;
+  type: QuestionType;
+  name: string;
+  /** Plain-text preview of the prompt. */
+  excerpt: string;
+  points: number;
+  categoryId: string;
+  categoryName: string;
+  /** Quizzes that use the question directly. */
+  quizCount: number;
+  updatedAt: string;
+}
+
+export interface QuizSlotInfo {
+  id: string;
+  kind: 'question' | 'random';
+  /** Mark for each question in the slot. */
+  points: number;
+  /** 1 for a question slot. */
+  questionCount: number;
+  question: BankQuestionSummary | null;
+  category: { id: string; name: string } | null;
+  includeSubcategories: boolean;
+  /** Random slots: questions available to pick from (not already in the quiz). */
+  available: number | null;
+  /** Random slots: questions needed from these categories by this and narrower random slots. */
+  needed: number | null;
+}
+
+export interface QuizSlots {
+  slots: QuizSlotInfo[];
+  questionCount: number;
+  totalPoints: number;
+  /** Reasons an attempt couldn't start, e.g. too few questions for a random slot. */
+  problems: string[];
+}
+
+export interface QuizGradingItem {
+  attemptId: string;
+  attemptNumber: number;
+  user: PublicUser;
+  finishedAt: string | null;
+  /** Essays waiting for a mark. */
+  pending: number;
 }

@@ -15,13 +15,21 @@ import { ApiError } from './lib/http.js';
 import { activityRoutes } from './routes/activities.js';
 import { adminRoutes } from './routes/admin.js';
 import { authRoutes } from './routes/auth.js';
+import { badgeRoutes } from './routes/badges.js';
 import { categoryRoutes } from './routes/categories.js';
+import { cohortRoutes, courseCohortRoutes } from './routes/cohorts.js';
+import { certificateRoutes } from './routes/certificates.js';
+import { completionRoutes } from './routes/completion.js';
 import { contentRoutes } from './routes/content.js';
 import { courseRoutes } from './routes/courses.js';
+import { emailRoutes } from './routes/email.js';
 import { fileRoutes } from './routes/files.js';
 import { forumRoutes } from './routes/forums.js';
+import { gradeCategoryRoutes } from './routes/grade-categories.js';
 import { gradeRoutes } from './routes/grades.js';
+import { groupRoutes } from './routes/groups.js';
 import { meRoutes } from './routes/me.js';
+import { questionBankRoutes } from './routes/question-bank.js';
 import { quizRoutes } from './routes/quizzes.js';
 
 const JSON_LIMIT = 5 * 1024 * 1024;
@@ -86,11 +94,21 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
   app.route('/api/courses', courseRoutes(deps));
   app.route('/api/courses', contentRoutes(deps));
   app.route('/api/courses', gradeRoutes(deps));
+  app.route('/api/courses', groupRoutes(deps));
+  app.route('/api/courses', courseCohortRoutes(deps));
+  app.route('/api/admin/cohorts', cohortRoutes(deps));
+  app.route('/api/courses', gradeCategoryRoutes(deps));
   app.route('/api/activities', activityRoutes(deps));
   app.route('/api/files', fileRoutes(deps));
   app.route('/api', quizRoutes(deps));
   app.route('/api', forumRoutes(deps));
   app.route('/api', meRoutes(deps));
+  // /api/email/*, /api/admin/email/* and the one-click POST /unsubscribe (outside /api: mail providers send no Origin)
+  app.route('/', emailRoutes(deps));
+  app.route('/api/courses', completionRoutes(deps));
+  app.route('/api', certificateRoutes(deps));
+  app.route('/api', badgeRoutes(deps));
+  app.route('/api', questionBankRoutes(deps));
   app.all('/api/*', (c) => c.json(errorBody('Not found.', 'not_found'), 404));
 
   if (deps.config.webDir) {

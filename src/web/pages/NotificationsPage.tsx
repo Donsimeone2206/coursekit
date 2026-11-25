@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { BellOff, CheckCheck } from 'lucide-react';
-import { useNavigate } from 'react-router';
+import { BellOff, CheckCheck, Mail } from 'lucide-react';
+import { Link, useNavigate } from 'react-router';
 import { PageHeader } from '@/components/common';
 import { NotificationIcon, Page, useNotifications } from '@/components/layout/shell';
 import { Button } from '@/components/ui/button';
@@ -26,11 +26,18 @@ export default function NotificationsPage() {
         title="Notifications"
         description="Grades, announcements and replies from your courses."
         actions={
-          !!data?.unreadCount && (
-            <Button variant="outline" onClick={() => read.mutate(undefined)} loading={read.isPending}>
-              <CheckCheck /> Mark all as read
+          <>
+            <Button asChild variant="ghost">
+              <Link to="/profile?section=email">
+                <Mail /> Email settings
+              </Link>
             </Button>
-          )
+            {!!data?.unreadCount && (
+              <Button variant="outline" onClick={() => read.mutate(undefined)} loading={read.isPending}>
+                <CheckCheck /> Mark all as read
+              </Button>
+            )}
+          </>
         }
       />
       {error ? (

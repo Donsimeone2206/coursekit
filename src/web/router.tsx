@@ -57,6 +57,13 @@ export const router = createBrowserRouter([
   { path: '/setup', element: <SetupPage />, errorElement: <RouteError /> },
   { path: '/login', element: <LoginPage />, errorElement: <RouteError /> },
   { path: '/register', element: <RegisterPage />, errorElement: <RouteError /> },
+  { path: '/unsubscribe', element: page(() => import('./pages/UnsubscribePage')), errorElement: <RouteError /> },
+  { path: '/verify/:code?', element: page(() => import('./pages/VerifyCertificatePage')), errorElement: <RouteError /> },
+  {
+    path: '/certificates/:certificateId',
+    element: <RequireAuth>{page(() => import('./pages/CertificatePage'))}</RequireAuth>,
+    errorElement: <RouteError />,
+  },
   {
     element: (
       <RequireAuth>
@@ -79,8 +86,13 @@ export const router = createBrowserRouter([
           { index: true, element: page(() => import('./pages/course/CourseContentPage')) },
           { path: 'announcements', element: page(() => import('./pages/course/AnnouncementsPage')) },
           { path: 'participants', element: page(() => import('./pages/course/ParticipantsPage')) },
+          { path: 'groups', element: page(() => import('./pages/course/GroupsPage')) },
           { path: 'grades', element: page(() => import('./pages/course/GradesPage')) },
+          { path: 'completion', element: page(() => import('./pages/course/CompletionPage')) },
+          { path: 'badges', element: page(() => import('./pages/course/CourseBadgesPage')) },
+          { path: 'grades/setup', element: page(() => import('./pages/course/GradebookSetupPage')) },
           { path: 'settings', element: page(() => import('./pages/course/CourseSettingsPage')) },
+          { path: 'question-bank', element: page(() => import('./pages/course/QuestionBankPage')) },
         ],
       },
       { path: 'courses/:slug/activities/:activityId', element: page(() => import('./pages/activities/ActivityPage')) },
@@ -88,15 +100,20 @@ export const router = createBrowserRouter([
       { path: 'courses/:slug/activities/:activityId/questions', element: page(() => import('./pages/activities/QuizEditorPage')) },
       { path: 'courses/:slug/attempts/:attemptId', element: page(() => import('./pages/activities/QuizAttemptPage')) },
       { path: 'courses/:slug/discussions/:discussionId', element: page(() => import('./pages/activities/DiscussionPage')) },
+      { path: 'badges/:badgeId', element: page(() => import('./pages/BadgePage')) },
       {
         path: 'admin',
         element: page(() => import('./pages/admin/AdminLayout')),
         children: [
           { index: true, element: page(() => import('./pages/admin/AdminOverviewPage')) },
           { path: 'users', element: page(() => import('./pages/admin/AdminUsersPage')) },
+          { path: 'cohorts', element: page(() => import('./pages/admin/AdminCohortsPage'), 'AdminCohortsPage') },
+          { path: 'cohorts/:cohortId', element: page(() => import('./pages/admin/AdminCohortsPage'), 'AdminCohortPage') },
           { path: 'courses', element: page(() => import('./pages/admin/AdminCoursesPage'), 'AdminCoursesPage') },
           { path: 'categories', element: page(() => import('./pages/admin/AdminCoursesPage'), 'AdminCategoriesPage') },
           { path: 'settings', element: page(() => import('./pages/admin/AdminSettingsPage')) },
+          { path: 'email', element: page(() => import('./pages/admin/AdminEmailPage')) },
+          { path: 'badges', element: page(() => import('./pages/admin/AdminBadgesPage')) },
         ],
       },
       { path: '*', element: page(() => import('./pages/NotFoundPage')) },

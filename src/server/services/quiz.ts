@@ -1,104 +1,72 @@
-import type { AttemptAnswer, Question, QuestionResult, QuizAttempt, QuizSettings } from '../../shared/types.js';
+import type { AttemptAnswer, PublicUser, QuestionResult, QuizAttempt, QuizSettings } from '../../shared/types.js';
 import type { AppDeps } from '../context.js';
 import type { DB } from '../db/types.js';
 import type { ActivityRow, CourseRow, QuestionRow, QuizAttemptRow } from '../db/schema.js';
-import { badRequest, forbidden } from '../lib/http.js';
+import { badRequest, conflict, forbidden, notFound } from '../lib/http.js';
 import { newId, now, num, parseJson, round } from '../lib/util.js';
 import { parseSettings } from './activity-types.js';
 import { upsertGrade } from './grades.js';
+import { notify } from './notify.js';
 import { markCompleted } from './progress.js';
+import {
+  effectiveAnswer,
+  gradeQuestion,
+  reviewQuestion,
+  shuffle,
+  snapshotFromRow,
+  studentQuestion,
+  type QuestionSnapshot,
+  type StoredOption,
+} from './question-types.js';
+import { loadSlots, pickQuestions } from './quiz-slots.js';
 import { toCourseRef } from './serialize.js';
 
-export interface StoredOption {
-  id: string;
-  text: string;
-  correct: boolean;
-}
+export { gradeQuestion, normalizeText } from './question-types.js';
+export type { StoredOption };
 
 /** Answers saved within this window after the deadline are still accepted (network latency). */
 export const ATTEMPT_GRACE_MS = 30_000;
 
-export function normalizeText(value: string): string {
-  return value.normalize('NFKC').trim().toLowerCase().replace(/\s+/g, ' ');
+/** A question result as stored on the attempt (`gradedBy` is a user id). */
+export interface StoredResult extends Omit<QuestionResult, 'gradedBy'> {
+  gradedBy?: string | null;
 }
 
-function matchesAccepted(given: string, pattern: string): boolean {
-  if (!pattern.includes('*')) return given === pattern;
-  const escaped = pattern.split('*').map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-  return new RegExp(`^${escaped.join('.*')}$`).test(given);
+/** The quiz's directly added questions, in slot order (what the 0.1.x questions endpoint returns). */
+export async function loadQuizQuestions(db: DB, activityId: string): Promise<QuestionRow[]> {
+  const slots = (await loadSlots(db, activityId)).filter((s) => s.kind === 'question');
+  if (slots.length === 0) return [];
+  const rows = await db
+    .selectFrom('questions')
+    .selectAll()
+    .where(
+      'id',
+      'in',
+      slots.map((s) => s.questionId!),
+    )
+    .execute();
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  return slots.flatMap((s) => {
+    const row = byId.get(s.questionId!);
+    return row ? [{ ...row, points: s.points }] : [];
+  });
 }
 
-export function gradeQuestion(q: QuestionRow, answer: AttemptAnswer | undefined): QuestionResult {
-  const maxPoints = q.points;
-  const zero: QuestionResult = { correct: false, partial: false, points: 0, maxPoints };
-  const full: QuestionResult = { correct: true, partial: false, points: maxPoints, maxPoints };
-  if (!answer) return zero;
-  const options = parseJson<StoredOption[]>(q.options, []);
-
-  switch (q.type) {
-    case 'single':
-    case 'truefalse': {
-      const chosen = options.find((o) => o.id === answer.optionIds?.[0]);
-      return chosen?.correct ? full : zero;
-    }
-    case 'multiple': {
-      const chosen = new Set(answer.optionIds ?? []);
-      const correctIds = options.filter((o) => o.correct).map((o) => o.id);
-      if (correctIds.length === 0 || chosen.size === 0) return zero;
-      const right = correctIds.filter((id) => chosen.has(id)).length;
-      const wrong = options.filter((o) => !o.correct && chosen.has(o.id)).length;
-      // Each correct choice earns a share; each wrong choice takes one away (never below zero).
-      const fraction = Math.max(0, (right - wrong) / correctIds.length);
-      const points = round(maxPoints * fraction);
-      const correct = right === correctIds.length && wrong === 0;
-      return { correct, partial: !correct && points > 0, points, maxPoints };
-    }
-    case 'short': {
-      const given = normalizeText(answer.text ?? '');
-      if (!given) return zero;
-      const accepted = parseJson<string[]>(q.acceptedAnswers, []).map(normalizeText);
-      return accepted.some((a) => matchesAccepted(given, a)) ? full : zero;
-    }
-    case 'numeric': {
-      const raw = (answer.text ?? '').trim().replace(',', '.');
-      const given = Number(raw);
-      if (!raw || !Number.isFinite(given)) return zero;
-      const tolerance = q.tolerance ?? 0;
-      const accepted = parseJson<string[]>(q.acceptedAnswers, []).map(Number).filter(Number.isFinite);
-      return accepted.some((a) => Math.abs(a - given) <= tolerance + 1e-9) ? full : zero;
-    }
-    default:
-      return zero;
-  }
-}
-
-/** Question as an editor sees it, including correct answers. */
-export function questionWithAnswers(q: QuestionRow): Question {
-  return {
-    id: q.id,
-    type: q.type,
-    prompt: q.prompt,
-    points: q.points,
-    options: parseJson<StoredOption[]>(q.options, []).map((o) => ({ id: o.id, text: o.text, correct: o.correct })),
-    acceptedAnswers: parseJson<string[]>(q.acceptedAnswers, []),
-    tolerance: q.tolerance,
-    explanation: q.explanation,
-  };
-}
-
-/** Question as a student sees it during an attempt: no answers. */
-export function questionForStudent(q: QuestionRow): Question {
-  return {
-    id: q.id,
-    type: q.type,
-    prompt: q.prompt,
-    points: q.points,
-    options: parseJson<StoredOption[]>(q.options, []).map((o) => ({ id: o.id, text: o.text })),
-  };
-}
-
-export async function loadQuestions(db: DB, activityId: string): Promise<QuestionRow[]> {
-  return db.selectFrom('questions').selectAll().where('activityId', '=', activityId).orderBy('position', 'asc').execute();
+/**
+ * The questions of an attempt as they were when it started. Attempts always carry a snapshot (the 0.2.0
+ * migration backfilled older ones); if one is missing, the current bank versions are used.
+ */
+export async function attemptQuestions(db: DB, attempt: QuizAttemptRow): Promise<QuestionSnapshot[]> {
+  const snapshot = parseJson<QuestionSnapshot[]>(attempt.snapshot, []);
+  if (snapshot.length) return snapshot;
+  const ids = parseJson<string[]>(attempt.questionOrder, []);
+  if (ids.length === 0) return [];
+  const rows = await db.selectFrom('questions').selectAll().where('id', 'in', ids).execute();
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  return ids.flatMap((id) => {
+    const row = byId.get(id);
+    return row ? [snapshotFromRow(row)] : [];
+  });
 }
 
 export function isExpired(attempt: QuizAttemptRow): boolean {
@@ -111,15 +79,6 @@ export function canReview(settings: QuizSettings, activity: ActivityRow, isManag
   if (settings.reviewMode === 'immediate') return true;
   if (settings.reviewMode === 'after_due') return !!activity.dueAt && Date.now() > Date.parse(activity.dueAt);
   return false;
-}
-
-function shuffle<T>(items: T[]): T[] {
-  const a = [...items];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j]!, a[i]!];
-  }
-  return a;
 }
 
 export async function startAttempt(
@@ -158,9 +117,8 @@ export async function startAttempt(
     if (activity.dueAt && Date.now() > Date.parse(activity.dueAt)) throw forbidden('This quiz has closed.');
   }
 
-  const questions = await loadQuestions(db, activity.id);
-  if (questions.length === 0) throw badRequest('This quiz has no questions yet.');
-  const ids = questions.map((q) => q.id);
+  const picked = await pickQuestions(db, activity);
+  const questions = settings.shuffleQuestions ? shuffle(picked) : picked;
   const startedAt = now();
 
   const attempt: QuizAttemptRow = {
@@ -170,7 +128,7 @@ export async function startAttempt(
     userId,
     attemptNumber: used + 1,
     status: 'in_progress',
-    questionOrder: JSON.stringify(settings.shuffleQuestions ? shuffle(ids) : ids),
+    questionOrder: JSON.stringify(questions.map((q) => q.id)),
     answers: '{}',
     results: null,
     score: null,
@@ -178,11 +136,35 @@ export async function startAttempt(
     startedAt,
     deadlineAt: settings.timeLimitMinutes ? new Date(Date.parse(startedAt) + settings.timeLimitMinutes * 60_000).toISOString() : null,
     finishedAt: null,
+    snapshot: JSON.stringify(questions),
   };
   await db.insertInto('quizAttempts').values(attempt).execute();
   return attempt;
 }
 
+/** Grade recorded, completion, event: once an attempt's score is final. */
+async function attemptFinal(deps: Pick<AppDeps, 'db' | 'events'>, activity: ActivityRow, attempt: QuizAttemptRow) {
+  await updateQuizGrade(deps, activity, attempt.userId);
+  const settings = parseSettings('quiz', activity.settings);
+  const score = attempt.score ?? 0;
+  const percent = attempt.maxScore > 0 ? (score / attempt.maxScore) * 100 : 100;
+  if (activity.completion === 'auto' && (settings.passingPercent == null || percent >= settings.passingPercent)) {
+    await markCompleted(deps, activity, attempt.userId);
+  }
+  deps.events.emit('quiz.attempt.finished', {
+    attemptId: attempt.id,
+    activityId: activity.id,
+    courseId: activity.courseId,
+    userId: attempt.userId,
+    score,
+    maxScore: attempt.maxScore,
+  });
+}
+
+/**
+ * Submits an attempt and grades it from its snapshot. Attempts with essay answers become `needs_grading`:
+ * their score stays pending and no grade is recorded until every essay has a mark.
+ */
 export async function finishAttempt(
   deps: Pick<AppDeps, 'db' | 'events'>,
   attempt: QuizAttemptRow,
@@ -191,34 +173,34 @@ export async function finishAttempt(
 ): Promise<QuizAttemptRow> {
   const { db } = deps;
   const finalAnswers = answers ?? parseJson<Record<string, AttemptAnswer>>(attempt.answers, {});
-  const questions = new Map((await loadQuestions(db, activity.id)).map((q) => [q.id, q]));
-  const order = parseJson<string[]>(attempt.questionOrder, []);
+  const questions = await attemptQuestions(db, attempt);
 
-  const results: Record<string, QuestionResult> = {};
+  const results: Record<string, StoredResult> = {};
   let score = 0;
   let maxScore = 0;
-  for (const id of order) {
-    const q = questions.get(id);
-    if (!q) continue;
-    const r = gradeQuestion(q, finalAnswers[id]);
-    results[id] = r;
+  let pending = 0;
+  for (const q of questions) {
+    const r = gradeQuestion(q, finalAnswers[q.id]);
+    results[q.id] = r;
     score += r.points;
     maxScore += r.maxPoints;
+    if (r.pending) pending++;
   }
-  score = round(score);
-  maxScore = round(maxScore);
+  const status = pending ? 'needs_grading' : 'finished';
   const finishedAt = now();
+  const next: QuizAttemptRow = {
+    ...attempt,
+    status,
+    answers: JSON.stringify(finalAnswers),
+    results: JSON.stringify(results),
+    score: pending ? null : round(score),
+    maxScore: round(maxScore),
+    finishedAt,
+  };
 
   const update = await db
     .updateTable('quizAttempts')
-    .set({
-      status: 'finished',
-      answers: JSON.stringify(finalAnswers),
-      results: JSON.stringify(results),
-      score,
-      maxScore,
-      finishedAt,
-    })
+    .set({ status, answers: next.answers, results: next.results, score: next.score, maxScore: next.maxScore, finishedAt })
     .where('id', '=', attempt.id)
     .where('status', '=', 'in_progress')
     .executeTakeFirst();
@@ -228,32 +210,21 @@ export async function finishAttempt(
     return (await db.selectFrom('quizAttempts').selectAll().where('id', '=', attempt.id).executeTakeFirstOrThrow()) as QuizAttemptRow;
   }
 
-  await updateQuizGrade(deps, activity, attempt.userId);
-
-  const settings = parseSettings('quiz', activity.settings);
-  const percent = maxScore > 0 ? (score / maxScore) * 100 : 100;
-  if (activity.completion === 'auto' && (settings.passingPercent == null || percent >= settings.passingPercent)) {
-    await markCompleted(deps, activity, attempt.userId);
-  }
-
-  deps.events.emit('quiz.attempt.finished', {
+  deps.events.emit('quiz.attempt.submitted', {
     attemptId: attempt.id,
     activityId: activity.id,
     courseId: activity.courseId,
     userId: attempt.userId,
-    score,
-    maxScore,
+    needsGrading: pending > 0,
   });
 
-  return {
-    ...attempt,
-    status: 'finished',
-    answers: JSON.stringify(finalAnswers),
-    results: JSON.stringify(results),
-    score,
-    maxScore,
-    finishedAt,
-  };
+  if (!pending) {
+    await attemptFinal(deps, activity, next);
+  } else if (activity.completion === 'auto' && parseSettings('quiz', activity.settings).passingPercent == null) {
+    // Without a pass mark, handing the quiz in completes it even while essays wait for marking.
+    await markCompleted(deps, activity, attempt.userId);
+  }
+  return next;
 }
 
 /** Recomputes a student's quiz grade from their finished attempts using the quiz's grading method. */
@@ -275,8 +246,14 @@ export async function updateQuizGrade(deps: Pick<AppDeps, 'db' | 'events'>, acti
     .where('status', '=', 'finished')
     .orderBy('finishedAt', 'asc')
     .execute();
-  if (attempts.length === 0) return;
+  const score = quizScore(activity, attempts);
+  if (score == null) return;
+  await upsertGrade(deps, { activityId: activity.id, courseId: activity.courseId, userId, score, gradedBy: null });
+}
 
+/** The grade for a list of finished attempts (oldest first), or null when there are none. */
+function quizScore(activity: ActivityRow, attempts: Array<{ score: number | null; maxScore: number }>): number | null {
+  if (attempts.length === 0) return null;
   const fractions = attempts.map((a) => (a.maxScore > 0 ? (a.score ?? 0) / a.maxScore : 0));
   const { gradingMethod } = parseSettings('quiz', activity.settings);
   const fraction =
@@ -285,30 +262,146 @@ export async function updateQuizGrade(deps: Pick<AppDeps, 'db' | 'events'>, acti
       : gradingMethod === 'average'
         ? fractions.reduce((s, f) => s + f, 0) / fractions.length
         : Math.max(...fractions);
+  return round(fraction * (activity.maxGrade ?? 10));
+}
 
-  await upsertGrade(deps, {
-    activityId: activity.id,
-    courseId: activity.courseId,
-    userId,
-    score: round(fraction * (activity.maxGrade ?? 10)),
-    gradedBy: null,
-  });
+/** Recomputes every student's grade for a quiz (after its maximum changes), writing only grades that change. */
+export async function regradeQuiz(deps: Pick<AppDeps, 'db' | 'events'>, activity: ActivityRow): Promise<void> {
+  const { db } = deps;
+  const [students, attempts, grades] = await Promise.all([
+    db.selectFrom('enrolments').select('userId').where('courseId', '=', activity.courseId).where('role', '=', 'student').execute(),
+    db
+      .selectFrom('quizAttempts')
+      .select(['userId', 'score', 'maxScore'])
+      .where('activityId', '=', activity.id)
+      .where('status', '=', 'finished')
+      .orderBy('finishedAt', 'asc')
+      .execute(),
+    db.selectFrom('grades').select(['userId', 'score']).where('activityId', '=', activity.id).execute(),
+  ]);
+  const isStudent = new Set(students.map((s) => s.userId));
+  const current = new Map(grades.map((g) => [g.userId, g.score]));
+  const byUser = new Map<string, typeof attempts>();
+  for (const a of attempts) if (isStudent.has(a.userId)) byUser.set(a.userId, [...(byUser.get(a.userId) ?? []), a]);
+  for (const [userId, list] of byUser) {
+    const score = quizScore(activity, list);
+    if (score == null || current.get(userId) === score) continue;
+    await upsertGrade(deps, { activityId: activity.id, courseId: activity.courseId, userId, score, gradedBy: null });
+  }
+}
+
+/** Students' attempts at a quiz that wait for essays to be marked. */
+export async function countNeedsGrading(db: DB, activityId: string): Promise<number> {
+  const row = await db
+    .selectFrom('quizAttempts')
+    .innerJoin('enrolments', (join) =>
+      join.onRef('enrolments.userId', '=', 'quizAttempts.userId').onRef('enrolments.courseId', '=', 'quizAttempts.courseId'),
+    )
+    .select((eb) => eb.fn.countAll().as('n'))
+    .where('quizAttempts.activityId', '=', activityId)
+    .where('quizAttempts.status', '=', 'needs_grading')
+    .where('enrolments.role', '=', 'student')
+    .executeTakeFirst();
+  return num(row?.n);
+}
+
+/**
+ * Marks one essay answer. When the last essay of an attempt gets its mark, the score becomes final, the
+ * grade is recorded (`grade.updated`) and the student is notified. Marks can be changed later.
+ */
+export async function gradeEssay(
+  deps: Pick<AppDeps, 'db' | 'events'>,
+  input: {
+    attemptId: string;
+    activity: ActivityRow;
+    course: CourseRow;
+    questionId: string;
+    points: number;
+    comment: string | null;
+    graderId: string;
+  },
+): Promise<QuizAttemptRow> {
+  const { db } = deps;
+  for (let tries = 0; tries < 5; tries++) {
+    const attempt = await db.selectFrom('quizAttempts').selectAll().where('id', '=', input.attemptId).executeTakeFirst();
+    if (!attempt) throw notFound('Attempt');
+    if (attempt.status === 'in_progress') throw badRequest('This attempt has not been submitted yet.');
+    const questions = await attemptQuestions(db, attempt);
+    const question = questions.find((q) => q.id === input.questionId);
+    if (!question) throw notFound('Question');
+    if (question.type !== 'essay') throw badRequest('Only essay answers are marked by hand.');
+    if (input.points > question.points) throw badRequest(`The mark can't be more than ${question.points}.`);
+
+    const results = parseJson<Record<string, StoredResult>>(attempt.results, {});
+    const points = round(input.points);
+    results[question.id] = {
+      correct: question.points > 0 && points >= question.points,
+      partial: points > 0 && points < question.points,
+      points,
+      maxPoints: question.points,
+      pending: false,
+      comment: input.comment,
+      gradedBy: input.graderId,
+      gradedAt: now(),
+    };
+    const pending = questions.some((q) => results[q.id]?.pending);
+    const score = round(questions.reduce((sum, q) => sum + (results[q.id]?.points ?? 0), 0));
+    const status = pending ? 'needs_grading' : 'finished';
+    const update = await db
+      .updateTable('quizAttempts')
+      .set({ results: JSON.stringify(results), status, score: pending ? null : score })
+      .where('id', '=', attempt.id)
+      .where((eb) => (attempt.results == null ? eb('results', 'is', null) : eb('results', '=', attempt.results)))
+      .executeTakeFirst();
+    if (num(update.numUpdatedRows) === 0) continue; // another grader saved in between: start over with their marks
+
+    const next: QuizAttemptRow = { ...attempt, results: JSON.stringify(results), status, score: pending ? null : score };
+    if (status === 'finished') {
+      if (attempt.status === 'needs_grading') {
+        await attemptFinal(deps, input.activity, next);
+        await notify(db, [attempt.userId], {
+          type: 'grade',
+          title: `${input.activity.title} was graded`,
+          body: `Your attempt ${attempt.attemptNumber} scored ${score} / ${attempt.maxScore}. Your teacher marked your written answers.`,
+          link: `/courses/${input.course.slug}/attempts/${attempt.id}`,
+        });
+      } else {
+        await updateQuizGrade(deps, input.activity, attempt.userId);
+      }
+    }
+    return next;
+  }
+  throw conflict('Someone else is marking this attempt right now. Please try again.');
 }
 
 export function toAttemptDto(
   attempt: QuizAttemptRow,
   activity: ActivityRow,
   course: CourseRow,
-  questionRows: QuestionRow[],
-  review: boolean,
+  questions: QuestionSnapshot[],
+  options: { review: boolean; staff: boolean; canGrade: boolean; users: Map<string, PublicUser>; owner?: PublicUser },
 ): QuizAttempt {
   const settings = parseSettings('quiz', activity.settings);
-  const byId = new Map(questionRows.map((q) => [q.id, q]));
-  const order = parseJson<string[]>(attempt.questionOrder, []);
-  const questions = order
-    .map((id) => byId.get(id))
-    .filter((q): q is QuestionRow => !!q)
-    .map((q) => (review && attempt.status === 'finished' ? questionWithAnswers(q) : questionForStudent(q)));
+  const submitted = attempt.status !== 'in_progress';
+  const review = options.review && submitted;
+  const saved = parseJson<Record<string, AttemptAnswer>>(attempt.answers, {});
+  const answers: Record<string, AttemptAnswer> = { ...saved };
+  for (const q of questions) {
+    const a = effectiveAnswer(q, saved[q.id]);
+    if (a) answers[q.id] = a;
+  }
+
+  const stored = submitted ? parseJson<Record<string, StoredResult>>(attempt.results, {}) : {};
+  let results: Record<string, QuestionResult> | null = null;
+  if (submitted) {
+    results = {};
+    // Without review, only marks given by hand (essays) are shown: they carry no correct answers.
+    for (const q of questions) {
+      const r = stored[q.id];
+      if (!r || (!review && q.type !== 'essay')) continue;
+      results[q.id] = { ...r, gradedBy: r.gradedBy ? (options.users.get(r.gradedBy) ?? null) : null };
+    }
+  }
 
   return {
     id: attempt.id,
@@ -318,14 +411,24 @@ export function toAttemptDto(
     finishedAt: attempt.finishedAt,
     score: attempt.score,
     maxScore: attempt.maxScore,
+    ...(options.owner ? { user: options.owner } : {}),
     activityId: activity.id,
     quizTitle: activity.title,
     course: toCourseRef(course),
     deadlineAt: attempt.deadlineAt,
-    questions,
-    answers: parseJson<Record<string, AttemptAnswer>>(attempt.answers, {}),
-    review: review && attempt.status === 'finished',
-    results: review && attempt.status === 'finished' ? parseJson<Record<string, QuestionResult>>(attempt.results, {}) : null,
+    questions: questions.map((q) => (review ? reviewQuestion(q, options.staff) : studentQuestion(q))),
+    answers,
+    review,
+    results,
     passingPercent: settings.passingPercent,
+    pendingCount: submitted ? questions.filter((q) => stored[q.id]?.pending).length : 0,
+    canGrade: options.canGrade && submitted,
   };
+}
+
+/** Users who marked answers in an attempt by hand. */
+export function graderIds(attempt: QuizAttemptRow): string[] {
+  const ids = new Set<string>();
+  for (const r of Object.values(parseJson<Record<string, StoredResult>>(attempt.results, {}))) if (r.gradedBy) ids.add(r.gradedBy);
+  return [...ids];
 }

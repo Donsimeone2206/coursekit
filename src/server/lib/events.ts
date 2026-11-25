@@ -23,6 +23,37 @@ export interface CoursekitEvents {
   };
   'forum.post.created': { postId: string; discussionId: string; courseId: string; userId: string };
   'announcement.created': { announcementId: string; courseId: string; userId: string };
+  'email.sent': { emailId: string; kind: 'notification' | 'digest' | 'test'; userId: string | null; to: string };
+  'email.failed': {
+    emailId: string;
+    kind: 'notification' | 'digest' | 'test';
+    userId: string | null;
+    to: string;
+    error: string;
+    /** False when the message was given up on. */
+    willRetry: boolean;
+  };
+  'group.created': { groupId: string; courseId: string };
+  'group.updated': { groupId: string; courseId: string };
+  'group.deleted': { groupId: string; courseId: string };
+  'group.member.added': { groupId: string; courseId: string; userId: string };
+  'group.member.removed': { groupId: string; courseId: string; userId: string };
+  'cohort.created': { cohortId: string };
+  'cohort.updated': { cohortId: string };
+  'cohort.deleted': { cohortId: string };
+  'cohort.member.added': { cohortId: string; userId: string };
+  'cohort.member.removed': { cohortId: string; userId: string };
+  'cohort.linked': { cohortId: string; courseId: string; role: CourseRole };
+  'cohort.unlinked': { cohortId: string; courseId: string };
+  'course.completed': { courseId: string; userId: string; completedAt: string };
+  'certificate.issued': { certificateId: string; courseId: string; userId: string; code: string };
+  'certificate.revoked': { certificateId: string; courseId: string | null; userId: string; revokedBy: string };
+  'badge.awarded': { badgeId: string; courseId: string | null; userId: string; awardedBy: string | null };
+  'badge.revoked': { badgeId: string; courseId: string | null; userId: string; revokedBy: string };
+  /** A quiz attempt was handed in. `needsGrading`: essays wait for a teacher; `quiz.attempt.finished` follows once they are marked. */
+  'quiz.attempt.submitted': { attemptId: string; activityId: string; courseId: string; userId: string; needsGrading: boolean };
+  /** Grade categories, weights or the aggregation changed, so course totals may have changed for everyone. */
+  'gradebook.setup.updated': { courseId: string; userId: string };
 }
 
 export type EventName = keyof CoursekitEvents;

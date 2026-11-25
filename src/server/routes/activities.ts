@@ -4,15 +4,17 @@ import type { ActivityDetail, ActivityNavItem, ActivitySettingsMap, FileInfo, Gr
 import { requireUser, type AppDeps, type AppEnv } from '../context.js';
 import type { DB } from '../db/types.js';
 import type { ActivityRow, GradeRow, SubmissionRow } from '../db/schema.js';
-import { badRequest, forbidden, notFound, readBody } from '../lib/http.js';
+import { badRequest, forbidden, notFound, readBody, readQuery } from '../lib/http.js';
 import { isoDateSchema, markdownSchema } from '../lib/schemas.js';
 import { newId, now, num, parseJson } from '../lib/util.js';
 import { assertCan, assertWritable, loadActivityAccess, type ActivityAccess } from '../services/access.js';
 import { activityTypes, parseSettings } from '../services/activity-types.js';
 import { upsertGrade } from '../services/grades.js';
+import { findVisibleGroup, groupMemberIds } from '../services/groups.js';
 import { notify } from '../services/notify.js';
 import { markCompleted, unmarkCompleted } from '../services/progress.js';
-import { isExpired, loadQuestions, updateQuizGrade } from '../services/quiz.js';
+import { countNeedsGrading, isExpired, regradeQuiz } from '../services/quiz.js';
+import { quizTotals } from '../services/quiz-slots.js';
 import { toCourseRef, toFileInfo, toPublicUser } from '../services/serialize.js';
 import { activityMeta } from './courses.js';
 
@@ -191,7 +193,8 @@ export function activityRoutes(deps: AppDeps) {
 
     if (type === 'quiz') {
       const s = settings as ActivitySettingsMap['quiz'];
-      const questions = await loadQuestions(db, activity.id);
+      const [totals] = await quizTotals(db, [activity.id]);
+      const questionCount = totals?.n ?? 0;
       const attempts = await db
         .selectFrom('quizAttempts')
         .selectAll()
@@ -206,12 +209,12 @@ export function activityRoutes(deps: AppDeps) {
         .where('userId', '=', user.id)
         .executeTakeFirst();
       const inProgress = attempts.find((a) => a.status === 'in_progress' && !isExpired(a)) ?? null;
-      const finished = attempts.filter((a) => a.status === 'finished' || isExpired(a)).length;
+      const finished = attempts.filter((a) => a.status !== 'in_progress' || isExpired(a)).length;
       const isManager = access.can('course:manageContent');
       const closed = !!activity.dueAt && Date.now() > Date.parse(activity.dueAt);
       detail.quiz = {
-        questionCount: questions.length,
-        totalPoints: questions.reduce((sum, q) => sum + q.points, 0),
+        questionCount,
+        totalPoints: totals?.total ?? 0,
         attempts: attempts.map((a) => ({
           id: a.id,
           attemptNumber: a.attemptNumber,
@@ -225,12 +228,13 @@ export function activityRoutes(deps: AppDeps) {
         canAttempt:
           access.can('quiz:attempt') &&
           !access.readOnly &&
-          questions.length > 0 &&
+          questionCount > 0 &&
           (!!inProgress || isManager || ((s.attemptsAllowed === 0 || finished < s.attemptsAllowed) && !closed)),
         inProgressAttemptId: inProgress?.id ?? null,
+        ...(access.can('quiz:viewAllAttempts') ? { needsGrading: await countNeedsGrading(db, activity.id) } : {}),
       };
       detail.grade = toGrade(grade, activity.maxGrade ?? 0, new Map());
-      counts.set(activity.id, questions.length);
+      counts.set(activity.id, questionCount);
     }
 
     if (type === 'forum') {
@@ -302,8 +306,7 @@ export function activityRoutes(deps: AppDeps) {
     if (input.maxGrade !== undefined && activity.type === 'quiz') {
       // Rescale existing quiz grades to the new maximum.
       const refreshed = await db.selectFrom('activities').selectAll().where('id', '=', activity.id).executeTakeFirstOrThrow();
-      const takers = await db.selectFrom('quizAttempts').select('userId').distinct().where('activityId', '=', activity.id).execute();
-      for (const t of takers) await updateQuizGrade(deps, refreshed, t.userId);
+      await regradeQuiz(deps, refreshed);
     }
     return c.json({ ok: true });
   });
@@ -421,6 +424,8 @@ export function activityRoutes(deps: AppDeps) {
     assertCan(access, 'grades:viewAll');
     const { activity } = access;
     if (activity.type !== 'assignment') throw badRequest('This activity is not an assignment.');
+    const { groupId } = readQuery(c, z.object({ groupId: z.string().max(40).optional() }));
+    const group = groupId ? await findVisibleGroup(db, access, groupId) : null;
     const students = await db
       .selectFrom('enrolments')
       .innerJoin('users', 'users.id', 'enrolments.userId')
@@ -428,6 +433,7 @@ export function activityRoutes(deps: AppDeps) {
       .where('enrolments.courseId', '=', activity.courseId)
       .where('enrolments.role', '=', 'student')
       .where('enrolments.status', '=', 'active')
+      .$if(!!group, (q) => q.where('enrolments.userId', 'in', groupMemberIds(db, group!.id)))
       .orderBy('users.name', 'asc')
       .execute();
     const subs = await db.selectFrom('submissions').selectAll().where('activityId', '=', activity.id).execute();

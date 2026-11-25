@@ -1,5 +1,6 @@
 import type { DB } from '../db/types.js';
 import { newId, now } from '../lib/util.js';
+import { queueNotificationEmails } from './email/service.js';
 
 export interface NotificationInput {
   type: string;
@@ -8,7 +9,10 @@ export interface NotificationInput {
   link?: string | null;
 }
 
-/** Sends an in-app notification to each user (deduplicated). */
+/**
+ * Sends an in-app notification to each user (deduplicated), and queues an email for those who get one for
+ * each notification (see services/email). Email problems never make this fail.
+ */
 export async function notify(db: DB, userIds: Iterable<string>, input: NotificationInput): Promise<void> {
   const ids = [...new Set(userIds)];
   if (ids.length === 0) return;
@@ -30,6 +34,7 @@ export async function notify(db: DB, userIds: Iterable<string>, input: Notificat
       .values(rows.slice(i, i + 400))
       .execute();
   }
+  await queueNotificationEmails(db, rows);
 }
 
 export async function courseMemberIds(db: DB, courseId: string, roles: string[] = ['student']): Promise<string[]> {

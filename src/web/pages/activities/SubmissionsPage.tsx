@@ -5,6 +5,7 @@ import { Link, useParams } from 'react-router';
 import { toast } from 'sonner';
 import type { Grade, PublicUser, Submission } from '@shared/types';
 import { FileChip } from '@/components/common';
+import { GroupFilter, useGroupFilter } from '@/components/groups';
 import { Page } from '@/components/layout/shell';
 import { Markdown } from '@/components/markdown';
 import { Avatar } from '@/components/ui/avatar';
@@ -51,19 +52,22 @@ export default function SubmissionsPage() {
   const [selected, setSelected] = useState<string | null>(null);
   const [score, setScore] = useState('');
   const [feedback, setFeedback] = useState('');
+  const groupFilter = useGroupFilter(activity?.course.id);
 
   const filtered = useMemo(
     () =>
-      (rows ?? []).filter((r) =>
-        filter === 'needs'
-          ? r.needsGrading
-          : filter === 'graded'
-            ? r.grade?.score != null && !r.needsGrading
-            : filter === 'missing'
-              ? !r.submission
-              : true,
+      (rows ?? []).filter(
+        (r) =>
+          groupFilter.matches(r.user.id) &&
+          (filter === 'needs'
+            ? r.needsGrading
+            : filter === 'graded'
+              ? r.grade?.score != null && !r.needsGrading
+              : filter === 'missing'
+                ? !r.submission
+                : true),
       ),
-    [rows, filter],
+    [rows, filter, groupFilter.matches],
   );
 
   useEffect(() => {
@@ -88,7 +92,7 @@ export default function SubmissionsPage() {
       }),
     onSuccess: async () => {
       toast.success(`Saved grade for ${current!.user.name}`);
-      const remaining = (rows ?? []).filter((r) => r.needsGrading && r.user.id !== current!.user.id);
+      const remaining = (rows ?? []).filter((r) => r.needsGrading && r.user.id !== current!.user.id && groupFilter.matches(r.user.id));
       await Promise.all([
         qc.invalidateQueries({ queryKey: key }),
         qc.invalidateQueries({ queryKey: ['activity', activityId] }),
@@ -100,8 +104,16 @@ export default function SubmissionsPage() {
   });
 
   const count = (f: Filter) =>
-    (rows ?? []).filter((r) =>
-      f === 'needs' ? r.needsGrading : f === 'graded' ? r.grade?.score != null && !r.needsGrading : f === 'missing' ? !r.submission : true,
+    (rows ?? []).filter(
+      (r) =>
+        groupFilter.matches(r.user.id) &&
+        (f === 'needs'
+          ? r.needsGrading
+          : f === 'graded'
+            ? r.grade?.score != null && !r.needsGrading
+            : f === 'missing'
+              ? !r.submission
+              : true),
     ).length;
 
   return (
@@ -144,6 +156,7 @@ export default function SubmissionsPage() {
                   { value: 'all', label: 'All' },
                 ]}
               />
+              <GroupFilter filter={groupFilter} onChange={() => setSelected(null)} className="mt-2 sm:w-full" />
             </div>
             <div className="ck-scrollbar max-h-[65vh] divide-y overflow-y-auto">
               {filtered.length === 0 && <p className="p-6 text-center text-sm text-muted-foreground">Nothing here. 🎉</p>}

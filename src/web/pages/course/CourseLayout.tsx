@@ -6,13 +6,17 @@ import {
   CalendarRange,
   Check,
   ChevronRight,
+  Flag,
   KeyRound,
   Lock,
+  Medal,
   Megaphone,
   Pencil,
   Settings,
   Users,
+  UsersRound,
 } from 'lucide-react';
+import { Library } from 'lucide-react';
 import { useState } from 'react';
 import { Link, NavLink, Outlet, useParams } from 'react-router';
 import { toast } from 'sonner';
@@ -282,7 +286,11 @@ export default function CourseLayout() {
     { to: '', label: 'Course', icon: BookOpen, end: true },
     { to: 'announcements', label: 'Announcements', icon: Megaphone },
     { to: 'participants', label: 'Participants', icon: Users, show: can('course:viewParticipants') },
+    { to: 'groups', label: 'Groups', icon: UsersRound, show: can('course:manageGroups') || !!course.myGroups?.length },
     { to: 'grades', label: 'Grades', icon: Award },
+    { to: 'completion', label: 'Completion', icon: Flag, show: can('completion:viewReport') },
+    { to: 'badges', label: 'Badges', icon: Medal },
+    { to: 'question-bank', label: 'Question bank', icon: Library, show: can('questionbank:manage') },
     { to: 'settings', label: 'Settings', icon: Settings, show: can('course:update') },
   ].filter((t) => t.show !== false);
 

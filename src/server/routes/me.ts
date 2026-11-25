@@ -63,7 +63,7 @@ export function meRoutes(deps: AppDeps) {
             .selectFrom('quizAttempts')
             .select('activityId')
             .where('userId', '=', user.id)
-            .where('status', '=', 'finished')
+            .where('status', 'in', ['finished', 'needs_grading'])
             .where('activityId', 'in', dueIds)
             .execute(),
           db.selectFrom('grades').select(['activityId', 'score']).where('userId', '=', user.id).where('activityId', 'in', dueIds).execute(),

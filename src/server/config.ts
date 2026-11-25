@@ -1,5 +1,6 @@
 import { resolve } from 'node:path';
 import { defaultWebDir } from './paths.js';
+import { resolveEmailConfig, type EmailOptions, type ResolvedEmailConfig } from './services/email/config.js';
 
 export interface CoursekitOptions {
   /** `sqlite://./data/coursekit.db` (default), `sqlite::memory:` or a `postgres://` URL. */
@@ -18,6 +19,8 @@ export interface CoursekitOptions {
   migrate?: boolean | undefined;
   /** Log each request to the console. */
   logRequests?: boolean | undefined;
+  /** Outgoing email (notifications and digests). Off unless a transport or COURSEKIT_SMTP_URL is set. */
+  email?: EmailOptions | undefined;
 }
 
 export interface ResolvedConfig {
@@ -31,6 +34,7 @@ export interface ResolvedConfig {
   migrate: boolean;
   logRequests: boolean;
   secureCookies: boolean;
+  email: ResolvedEmailConfig;
 }
 
 export function resolveConfig(options: CoursekitOptions = {}, env: NodeJS.ProcessEnv = process.env): ResolvedConfig {
@@ -51,5 +55,6 @@ export function resolveConfig(options: CoursekitOptions = {}, env: NodeJS.Proces
     migrate: options.migrate ?? true,
     logRequests: options.logRequests ?? false,
     secureCookies: publicUrl?.startsWith('https://') ?? false,
+    email: resolveEmailConfig(options.email, env),
   };
 }

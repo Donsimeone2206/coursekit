@@ -12,6 +12,7 @@ import {
   type SeedDemoResult,
   type User,
 } from 'coursekit-lms';
+import type { DigestRunResult, EmailFrequency, EmailMessage, EmailTransport, OutboxRunResult } from 'coursekit-lms';
 
 // The README's library example: passing a possibly-undefined value must type-check.
 const options: CreateCoursekitOptions = { databaseUrl: process.env.DATABASE_URL, publicUrl: undefined, webDir: false };
@@ -50,3 +51,16 @@ void db;
 void app;
 
 await lms.close();
+
+// Email: a custom transport for any provider, and the digest run used from cron.
+const transport: EmailTransport = { name: 'Provider', send: async (message: EmailMessage) => void message.subject };
+const withEmail = await createCoursekit({ webDir: false, email: { transport, from: undefined, smtpUrl: process.env.SMTP_URL } });
+const digests: DigestRunResult = await withEmail.email.sendDigests({ force: true });
+const delivered: OutboxRunResult = await withEmail.email.processOutbox();
+const frequency: EmailFrequency = 'daily';
+void digests;
+void delivered;
+void frequency;
+// @ts-expect-error only the documented transports exist
+void createCoursekit({ email: { transport: 'carrier-pigeon' } });
+await withEmail.close();

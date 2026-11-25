@@ -7,15 +7,20 @@ import { createTestLms, setupSchool } from './helpers.js';
 function question(partial: Partial<QuestionRow>): QuestionRow {
   return {
     id: 'q',
-    activityId: 'a',
+    courseId: 'c',
+    categoryId: 'cat',
     type: 'single',
+    name: '',
     prompt: '?',
     points: 2,
     options: '[]',
     acceptedAnswers: '[]',
     tolerance: null,
     explanation: null,
-    position: 0,
+    settings: '{}',
+    createdBy: null,
+    createdAt: '',
+    updatedAt: '',
     ...partial,
   };
 }

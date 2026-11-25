@@ -1,40 +1,20 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
-import type { Gradebook, GradebookItem, GradebookRow, MyGrades } from '../../shared/types.js';
+import { categoriesWithItems, usesCategories } from '../../shared/grades.js';
+import type { Gradebook } from '../../shared/types.js';
 import { requireUser, type AppDeps, type AppEnv } from '../context.js';
 import type { DB } from '../db/types.js';
-import { badRequest, notFound, readBody } from '../lib/http.js';
-import { round } from '../lib/util.js';
+import { badRequest, notFound, readBody, readQuery } from '../lib/http.js';
 import { assertCan, loadCourseAccess, type CourseAccess } from '../services/access.js';
+import { buildCourseGradebook, buildStudentGrades } from '../services/gradebook.js';
 import { upsertGrade } from '../services/grades.js';
+import { findVisibleGroup, groupMemberIds } from '../services/groups.js';
 import { notify } from '../services/notify.js';
 
-/** Graded activities in course order. Hidden items are only included for staff. */
-async function gradeItems(db: DB, courseId: string, includeHidden: boolean): Promise<GradebookItem[]> {
-  const rows = await db
-    .selectFrom('activities')
-    .innerJoin('sections', 'sections.id', 'activities.sectionId')
-    .select([
-      'activities.id',
-      'activities.title',
-      'activities.type',
-      'activities.maxGrade',
-      'activities.dueAt',
-      'activities.visible',
-      'sections.visible as sectionVisible',
-    ])
-    .where('activities.courseId', '=', courseId)
-    .where('activities.maxGrade', 'is not', null)
-    .orderBy('sections.position', 'asc')
-    .orderBy('activities.position', 'asc')
-    .execute();
-  return rows
-    .filter((r) => includeHidden || (r.visible && r.sectionVisible))
-    .map((r) => ({ activityId: r.id, title: r.title, type: r.type, maxGrade: r.maxGrade ?? 0, dueAt: r.dueAt }));
-}
-
-async function buildGradebook(db: DB, access: CourseAccess): Promise<Gradebook> {
-  const items = await gradeItems(db, access.course.id, true);
+/** Grade items, categories and totals come from services/gradebook.ts (course totals: services/course-total.ts). */
+async function buildGradebook(db: DB, access: CourseAccess, groupId?: string): Promise<Gradebook> {
+  // With a group, rows and averages cover only its members.
+  const group = groupId ? await findVisibleGroup(db, access, groupId) : null;
   const students = await db
     .selectFrom('enrolments')
     .innerJoin('users', 'users.id', 'enrolments.userId')
@@ -42,45 +22,13 @@ async function buildGradebook(db: DB, access: CourseAccess): Promise<Gradebook> 
     .where('enrolments.courseId', '=', access.course.id)
     .where('enrolments.role', '=', 'student')
     .where('enrolments.status', '=', 'active')
+    .$if(!!group, (q) => q.where('enrolments.userId', 'in', groupMemberIds(db, group!.id)))
     .orderBy('users.name', 'asc')
     .execute();
-  const grades = await db.selectFrom('grades').selectAll().where('courseId', '=', access.course.id).execute();
-  const byKey = new Map(grades.map((g) => [`${g.activityId}:${g.userId}`, g]));
-
-  const rows: GradebookRow[] = students.map((s) => {
-    const cells: GradebookRow['cells'] = {};
-    let total = 0;
-    let max = 0;
-    for (const item of items) {
-      const g = byKey.get(`${item.activityId}:${s.id}`);
-      cells[item.activityId] = { score: g?.score ?? null, feedback: g?.feedback ?? null };
-      if (g?.score != null) {
-        total += g.score;
-        max += item.maxGrade;
-      }
-    }
-    return {
-      user: { id: s.id, name: s.name, email: s.email, avatarUrl: s.avatarUrl },
-      cells,
-      total: round(total),
-      max: round(max),
-      percentage: max > 0 ? round((total / max) * 100, 1) : null,
-    };
-  });
-
-  const averages: Gradebook['averages'] = {};
-  for (const item of items) {
-    const scores = rows.map((r) => r.cells[item.activityId]?.score).filter((s): s is number => s != null);
-    averages[item.activityId] = scores.length ? round(scores.reduce((a, b) => a + b, 0) / scores.length) : null;
-  }
-  const percents = rows.map((r) => r.percentage).filter((p): p is number => p != null);
-  return {
-    items,
-    rows,
-    averages,
-    courseAverage: percents.length ? round(percents.reduce((a, b) => a + b, 0) / percents.length, 1) : null,
-  };
+  return buildCourseGradebook(db, access.course.id, students);
 }
+
+const groupQuery = z.object({ groupId: z.string().max(40).optional() });
 
 function csvCell(value: unknown): string {
   const s = value == null ? '' : String(value);
@@ -97,44 +45,39 @@ export function gradeRoutes(deps: AppDeps) {
     const user = requireUser(c);
     const access = await loadCourseAccess(db, user, c.req.param('courseId'));
     assertCan(access, 'course:view');
-    if (access.can('grades:viewAll')) return c.json({ kind: 'gradebook' as const, gradebook: await buildGradebook(db, access) });
-
-    const items = await gradeItems(db, access.course.id, false);
-    const grades = await db
-      .selectFrom('grades')
-      .selectAll()
-      .where('courseId', '=', access.course.id)
-      .where('userId', '=', user.id)
-      .execute();
-    const byActivity = new Map(grades.map((g) => [g.activityId, g]));
-    let total = 0;
-    let max = 0;
-    const mine: MyGrades = {
-      items: items.map((item) => {
-        const g = byActivity.get(item.activityId);
-        if (g?.score != null) {
-          total += g.score;
-          max += item.maxGrade;
-        }
-        return { ...item, score: g?.score ?? null, feedback: g?.feedback ?? null, gradedAt: g?.gradedAt ?? null };
-      }),
-      total: round(total),
-      max: round(max),
-      percentage: max > 0 ? round((total / max) * 100, 1) : null,
-    };
-    return c.json({ kind: 'mine' as const, grades: mine });
+    if (access.can('grades:viewAll')) {
+      const { groupId } = readQuery(c, groupQuery);
+      return c.json({ kind: 'gradebook' as const, gradebook: await buildGradebook(db, access, groupId) });
+    }
+    return c.json({ kind: 'mine' as const, grades: await buildStudentGrades(db, access.course.id, user.id) });
   });
 
   r.get('/:courseId/grades/export.csv', async (c) => {
     const user = requireUser(c);
     const access = await loadCourseAccess(db, user, c.req.param('courseId'));
     assertCan(access, 'grades:viewAll');
-    const book = await buildGradebook(db, access);
-    const header = ['Name', 'Email', ...book.items.map((i) => `${i.title} (/${i.maxGrade})`), 'Total', 'Percentage'];
+    const book = await buildGradebook(db, access, readQuery(c, groupQuery).groupId);
+    // Courses that use categories get a subtotal column per category, just before the total.
+    const groups = usesCategories(book) ? categoriesWithItems(book.categories, book.items) : [];
+    const header = [
+      'Name',
+      'Email',
+      ...book.items.map((i) => `${i.title} (/${i.maxGrade})`),
+      ...groups.map((g) => `${g.name} total (%)`),
+      'Total',
+      'Percentage',
+    ];
     const lines = [header.map(csvCell).join(',')];
     for (const row of book.rows) {
       lines.push(
-        [row.user.name, row.user.email, ...book.items.map((i) => row.cells[i.activityId]?.score ?? ''), row.total, row.percentage ?? '']
+        [
+          row.user.name,
+          row.user.email,
+          ...book.items.map((i) => row.cells[i.activityId]?.score ?? ''),
+          ...groups.map((g) => row.categories[g.id]?.percentage ?? ''),
+          row.total,
+          row.percentage ?? '',
+        ]
           .map(csvCell)
           .join(','),
       );

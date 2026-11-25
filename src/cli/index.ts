@@ -24,6 +24,7 @@ ${bold('Commands')}
   migrate         Apply pending database migrations
   seed --demo     Load demo courses, people and activity
   create-admin    Create an administrator account
+  send-digests    Send due email digests and deliver queued email (for cron)
 
 ${bold('Options')}
   -p, --port <n>           Port to listen on ${dim('(default 3000, or $PORT)')}
@@ -32,6 +33,7 @@ ${bold('Options')}
       --data-dir <dir>     Uploads and the default SQLite file ${dim('(default ./data)')}
       --email, --name, --password   Account details for init / create-admin
       --demo               Add demo content (init, seed)
+      --force              send-digests: send the current digests even outside the digest hour
   -y, --yes                Accept defaults without prompting
   -v, --version            Print the version
   -h, --help               Show this help
@@ -98,6 +100,7 @@ async function main() {
       name: { type: 'string' },
       password: { type: 'string' },
       demo: { type: 'boolean', default: false },
+      force: { type: 'boolean', default: false },
       yes: { type: 'boolean', short: 'y', default: false },
       version: { type: 'boolean', short: 'v', default: false },
       help: { type: 'boolean', short: 'h', default: false },
@@ -120,6 +123,9 @@ async function main() {
           'DATABASE_URL=sqlite://./data/coursekit.db',
           'COURSEKIT_DATA_DIR=./data',
           '# COURSEKIT_PUBLIC_URL=https://learn.example.com',
+          '# Email: an SMTP server (npm install nodemailer), or COURSEKIT_MAIL_TRANSPORT=log to print emails instead',
+          '# COURSEKIT_SMTP_URL=smtp://user:password@smtp.example.com:587',
+          '# COURSEKIT_MAIL_FROM=Coursekit <no-reply@example.com>',
           '',
         ].join('\n'),
       );
@@ -148,6 +154,8 @@ async function main() {
     host: values.host,
     databaseUrl: values['database-url'],
     dataDir: values['data-dir'],
+    // Only the web server delivers email in the background; one-off commands never send.
+    email: command === 'start' ? undefined : { worker: false },
   };
 
   switch (command) {
@@ -196,6 +204,36 @@ async function main() {
         for (const u of result.users.slice(0, 5)) console.log(`  ${dim(u.role.padEnd(10))} ${u.email}`);
         console.log(dim(`  …and ${Math.max(0, result.users.length - 5)} more\n`));
       }
+      return lms.close();
+    }
+
+    case 'send-digests': {
+      const lms = await createCoursekit(options);
+      if (!lms.email.enabled) {
+        console.error(red('Email is not set up. Set COURSEKIT_SMTP_URL (or COURSEKIT_MAIL_TRANSPORT=log) first.'));
+        process.exitCode = 1;
+        return lms.close();
+      }
+      const digests = await lms.email.sendDigests({ force: values.force });
+      const delivered = { sent: 0, failed: 0, retrying: 0 };
+      // Each delivery run is time-boxed: keep going while it makes progress.
+      while (true) {
+        const run = await lms.email.processOutbox();
+        delivered.sent += run.sent;
+        delivered.failed += run.failed;
+        delivered.retrying += run.retrying;
+        if (run.sent === 0) break;
+      }
+      console.log(
+        green(`✓ Queued ${digests.daily} daily and ${digests.weekly} weekly digests`) +
+          dim(` (${digests.skipped} ${digests.skipped === 1 ? 'person had' : 'people had'} nothing new)`),
+      );
+      console.log(
+        `  Sent ${delivered.sent} ${delivered.sent === 1 ? 'email' : 'emails'}` +
+          (delivered.retrying ? `, ${delivered.retrying} will be retried` : '') +
+          (delivered.failed ? red(`, ${delivered.failed} failed`) : ''),
+      );
+      if (delivered.failed) process.exitCode = 1;
       return lms.close();
     }
 

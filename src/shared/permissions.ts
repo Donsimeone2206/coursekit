@@ -20,6 +20,13 @@ export const COURSE_CAPABILITIES = [
   'forum:post',
   'forum:moderate',
   'announcement:post',
+  'course:manageGroups',
+  'completion:viewReport',
+  'completion:manage',
+  'badges:manage',
+  'badges:award',
+  'questionbank:manage',
+  'grades:manage',
 ] as const;
 
 export type CourseCapability = (typeof COURSE_CAPABILITIES)[number];
@@ -39,6 +46,9 @@ export const ROLE_CAPABILITIES: Record<CourseRole, readonly CourseCapability[]> 
     'forum:post',
     'forum:moderate',
     'announcement:post',
+    'course:manageGroups',
+    'completion:viewReport',
+    'badges:award',
   ],
   student: ['course:view', 'course:viewParticipants', 'assignment:submit', 'quiz:attempt', 'forum:post'],
 };

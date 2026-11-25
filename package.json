@@ -1,6 +1,6 @@
 {
   "name": "coursekit-lms",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Open-source learning management system for Node.js: courses, lessons, assignments, quizzes, forums and a gradebook, with a modern web UI.",
   "keywords": [
     "lms",
@@ -68,9 +68,13 @@
     "zod": "^4.6.7"
   },
   "peerDependencies": {
+    "nodemailer": ">=6.0.0",
     "pg": "^8.0.0"
   },
   "peerDependenciesMeta": {
+    "nodemailer": {
+      "optional": true
+    },
     "pg": {
       "optional": true
     }
@@ -92,6 +96,7 @@
     "dompurify": "^3.5.0",
     "lucide-react": "^1.79.0",
     "marked": "^18.3.0",
+    "nodemailer": "^10.4.1",
     "pg": "^8.23.1",
     "prettier": "^3.10.1",
     "radix-ui": "^1.8.1",

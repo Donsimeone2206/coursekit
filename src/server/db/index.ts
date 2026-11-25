@@ -2,6 +2,11 @@ import { resolve } from 'node:path';
 import { CamelCasePlugin, Kysely, PostgresDialect, SqliteDialect, type Dialect } from 'kysely';
 import { Migrator, type Migration, type MigrationResult } from 'kysely/migration';
 import * as initial from './migrations/001_initial.js';
+import * as email from './migrations/002_email.js';
+import * as groupsCohorts from './migrations/003_groups_cohorts.js';
+import * as completionBadges from './migrations/004_completion_badges.js';
+import * as questionBank from './migrations/005_question_bank.js';
+import * as gradeCategories from './migrations/006_grade_categories.js';
 import { createNodeSqliteDatabase } from './node-sqlite.js';
 import type { Database } from './schema.js';
 import type { DB, DatabaseKind } from './types.js';
@@ -11,6 +16,11 @@ export type { DB, DatabaseKind } from './types.js';
 /** Migrations are registered in code so they survive bundling. Append new ones; never edit old ones. */
 export const migrations: Record<string, Migration> = {
   '001_initial': initial,
+  '002_email': email,
+  '003_groups_cohorts': groupsCohorts,
+  '004_completion_badges': completionBadges,
+  '005_question_bank': questionBank,
+  '006_grade_categories': gradeCategories,
 };
 
 export async function createDatabase(url: string): Promise<{ db: DB; kind: DatabaseKind }> {

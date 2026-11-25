@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router';
 import { toast } from 'sonner';
 import { COVER_COLORS } from '@shared/constants';
 import type { Category, CourseDetail, CourseVisibility, EnrolmentMethod } from '@shared/types';
+import { CompletionSettingsCard } from '@/components/completion/completion-settings';
 import { Page } from '@/components/layout/shell';
 import { MarkdownEditor } from '@/components/markdown';
 import { Button } from '@/components/ui/button';
@@ -41,7 +42,7 @@ export function CoverPicker({ value, onChange }: { value: string; onChange: (v: 
 
 function Section({ title, description, children }: { title: string; description: string; children: ReactNode }) {
   return (
-    <div className="grid gap-6 border-b py-8 first:pt-0 last:border-0 md:grid-cols-[260px_minmax(0,1fr)]">
+    <div className="grid grid-cols-1 gap-6 border-b py-8 first:pt-0 last:border-0 md:grid-cols-[260px_minmax(0,1fr)]">
       <div>
         <h2 className="text-[15px] font-semibold">{title}</h2>
         <p className="mt-1 text-sm text-muted-foreground">{description}</p>
@@ -200,6 +201,7 @@ export default function CourseSettingsPage() {
           </Button>
         </div>
       </form>
+      <CompletionSettingsCard course={course} />
 
       <Card className="mt-8 border-destructive/30 p-6">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">

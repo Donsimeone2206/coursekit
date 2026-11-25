@@ -5,6 +5,8 @@ import { toast } from 'sonner';
 import { SITE_ROLE_LABELS } from '@shared/permissions';
 import type { SessionInfo } from '@shared/types';
 import { PageHeader } from '@/components/common';
+import { EmailPreferencesCard } from '@/components/email/EmailPreferencesCard';
+import { MyAchievements } from '@/components/completion/my-achievements';
 import { Page } from '@/components/layout/shell';
 import { Avatar } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
@@ -113,6 +115,7 @@ export default function ProfilePage() {
             </div>
           </form>
         </Card>
+        <MyAchievements />
 
         <Card>
           <CardHeader title="Appearance" description="Choose how the site looks on this device." />
@@ -128,6 +131,8 @@ export default function ProfilePage() {
             />
           </div>
         </Card>
+
+        <EmailPreferencesCard />
 
         <Card>
           <CardHeader

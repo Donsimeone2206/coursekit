@@ -3,8 +3,10 @@ import { Award, Download, MessageSquareText, Search } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router';
 import { toast } from 'sonner';
+import { usesCategories } from '@shared/grades';
 import type { Gradebook, GradebookItem, MyGrades } from '@shared/types';
 import { ActivityIcon } from '@/components/course';
+import { GroupFilter, useGroupFilter, type GroupFilterState } from '@/components/groups';
 import { Page } from '@/components/layout/shell';
 import { Avatar } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
@@ -15,9 +17,18 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/menu';
 import { EmptyState, ErrorState, Progress, ProgressRing, Skeleton } from '@/components/ui/misc';
 import { activityPath } from '@/lib/activity';
 import { api, errorMessage } from '@/lib/api';
+import { formatPercent } from '@/lib/grades';
 import { useTitle } from '@/lib/hooks';
 import { cn, formatDate, formatNumber } from '@/lib/utils';
 import { useCourseContext } from './context';
+import {
+  CategoryAverageCells,
+  CategoryGroupRow,
+  CategoryTotalCells,
+  CategoryTotalHeaders,
+  GradebookSetupButton,
+} from './GradebookCategories';
+import { MyCategoryGrades } from './MyCategoryGrades';
 
 type GradesResponse = { kind: 'gradebook'; gradebook: Gradebook } | { kind: 'mine'; grades: MyGrades };
 
@@ -35,6 +46,7 @@ function GradeCell({
   score,
   feedback,
   editable,
+  dropped = false,
 }: {
   courseId: string;
   item: GradebookItem;
@@ -42,6 +54,7 @@ function GradeCell({
   score: number | null;
   feedback: string | null;
   editable: boolean;
+  dropped?: boolean;
 }) {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -62,8 +75,12 @@ function GradeCell({
   });
   const pct = score != null && item.maxGrade ? (score / item.maxGrade) * 100 : null;
   const content = (
-    <span className={cn('inline-flex items-center gap-1 tabular-nums', tone(pct))}>
+    <span
+      className={cn('inline-flex items-center gap-1 tabular-nums', dropped ? 'text-muted-foreground line-through' : tone(pct))}
+      title={dropped ? 'Dropped: one of the lowest grades in its category' : undefined}
+    >
       {score != null ? formatNumber(score) : <span className="text-muted-foreground/50">–</span>}
+      {dropped && <span className="sr-only"> (dropped)</span>}
       {feedback && <MessageSquareText className="size-3 text-muted-foreground" />}
     </span>
   );
@@ -127,12 +144,15 @@ function GradebookTable({
   courseId,
   courseSlug,
   editable,
+  groupFilter,
 }: {
   book: Gradebook;
   courseId: string;
   courseSlug: string;
   editable: boolean;
+  groupFilter: GroupFilterState;
 }) {
+  const groupQuery = groupFilter.groupId ? `?groupId=${encodeURIComponent(groupFilter.groupId)}` : '';
   const [q, setQ] = useState('');
   const rows = useMemo(() => {
     const term = q.trim().toLowerCase();
@@ -145,6 +165,7 @@ function GradebookTable({
         icon={Award}
         title="No graded activities yet"
         description="Assignments and quizzes appear here as soon as you add them."
+        action={<GradebookSetupButton courseSlug={courseSlug} />}
       />
     );
   }
@@ -162,15 +183,15 @@ function GradebookTable({
             aria-label="Find a student"
           />
         </div>
+        <GroupFilter filter={groupFilter} />
         <div className="flex items-center gap-4 sm:ml-auto">
           <span className="text-sm text-muted-foreground">
-            Class average{' '}
-            <span className="font-semibold text-foreground">
-              {book.courseAverage != null ? `${formatNumber(book.courseAverage)}%` : '–'}
-            </span>
+            {groupFilter.active ? 'Group average' : 'Class average'}{' '}
+            <span className="font-semibold text-foreground">{formatPercent(book.courseAverage)}</span>
           </span>
+          <GradebookSetupButton courseSlug={courseSlug} />
           <Button asChild variant="outline" size="sm">
-            <a href={`/api/courses/${courseId}/grades/export.csv`} download>
+            <a href={`/api/courses/${courseId}/grades/export.csv${groupQuery}`} download>
               <Download /> Export CSV
             </a>
           </Button>
@@ -180,6 +201,7 @@ function GradebookTable({
         <div className="ck-scrollbar overflow-x-auto">
           <table className="w-full border-separate border-spacing-0 text-sm">
             <thead>
+              <CategoryGroupRow book={book} />
               <tr className="text-left text-xs text-muted-foreground">
                 <th className="sticky left-0 z-10 min-w-56 border-b bg-card px-5 py-3 font-medium">Student</th>
                 {book.items.map((item) => (
@@ -191,6 +213,7 @@ function GradebookTable({
                     </Link>
                   </th>
                 ))}
+                <CategoryTotalHeaders book={book} />
                 <th className="min-w-28 border-b bg-muted/40 px-5 py-3 text-right align-bottom font-medium text-foreground">Total</th>
               </tr>
             </thead>
@@ -215,16 +238,18 @@ function GradebookTable({
                         score={row.cells[item.activityId]?.score ?? null}
                         feedback={row.cells[item.activityId]?.feedback ?? null}
                         editable={editable}
+                        dropped={row.cells[item.activityId]?.dropped}
                       />
                     </td>
                   ))}
+                  <CategoryTotalCells book={book} row={row} />
                   <td className="border-b bg-muted/40 px-5 py-2.5 text-right">
-                    <span className={cn('font-semibold tabular-nums', tone(row.percentage))}>
-                      {row.percentage != null ? `${formatNumber(row.percentage)}%` : '–'}
-                    </span>
-                    <span className="block text-xs text-muted-foreground tabular-nums">
-                      {formatNumber(row.total)} / {formatNumber(row.max)}
-                    </span>
+                    <span className={cn('font-semibold tabular-nums', tone(row.percentage))}>{formatPercent(row.percentage)}</span>
+                    {book.aggregation !== 'weighted' && (
+                      <span className="block text-xs text-muted-foreground tabular-nums">
+                        {formatNumber(row.total)} / {formatNumber(row.max)}
+                      </span>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -237,8 +262,9 @@ function GradebookTable({
                     {formatNumber(book.averages[item.activityId])}
                   </td>
                 ))}
+                <CategoryAverageCells book={book} />
                 <td className="bg-muted/60 px-5 py-3 text-right font-semibold text-foreground tabular-nums">
-                  {book.courseAverage != null ? `${formatNumber(book.courseAverage)}%` : '–'}
+                  {formatPercent(book.courseAverage)}
                 </td>
               </tr>
             </tfoot>
@@ -305,7 +331,7 @@ function MyGradesView({ grades, courseSlug }: { grades: MyGrades; courseSlug: st
           size={120}
           stroke={9}
           className="mx-auto mt-4 text-primary"
-          label={<span className="text-2xl font-semibold">{grades.percentage != null ? `${formatNumber(grades.percentage)}%` : '–'}</span>}
+          label={<span className="text-2xl font-semibold">{formatPercent(grades.percentage)}</span>}
         />
         <p className="mt-4 text-sm tabular-nums">
           {formatNumber(grades.total)} of {formatNumber(grades.max)} points
@@ -324,9 +350,12 @@ function MyGradesView({ grades, courseSlug }: { grades: MyGrades; courseSlug: st
 export default function GradesPage() {
   const { course, can } = useCourseContext();
   useTitle(`Grades · ${course.title}`);
+  const groupFilter = useGroupFilter(can('grades:viewAll') ? course.id : undefined);
+  const groupId = groupFilter.groupId;
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ['grades', course.id],
-    queryFn: () => api.get<GradesResponse>(`/courses/${course.id}/grades`),
+    queryKey: ['grades', course.id, groupId],
+    queryFn: () => api.get<GradesResponse>(`/courses/${course.id}/grades${groupId ? `?groupId=${encodeURIComponent(groupId)}` : ''}`),
+    placeholderData: (previous) => previous, // keep the table while another group loads
   });
 
   return (
@@ -336,10 +365,20 @@ export default function GradesPage() {
       ) : isLoading || !data ? (
         <Skeleton className="h-96" />
       ) : data.kind === 'gradebook' ? (
-        <GradebookTable book={data.gradebook} courseId={course.id} courseSlug={course.slug} editable={can('grades:edit')} />
+        <GradebookTable
+          book={data.gradebook}
+          courseId={course.id}
+          courseSlug={course.slug}
+          editable={can('grades:edit')}
+          groupFilter={groupFilter}
+        />
       ) : (
         <div className="mx-auto max-w-5xl">
-          <MyGradesView grades={data.grades} courseSlug={course.slug} />
+          {usesCategories(data.grades) ? (
+            <MyCategoryGrades grades={data.grades} courseSlug={course.slug} />
+          ) : (
+            <MyGradesView grades={data.grades} courseSlug={course.slug} />
+          )}
         </div>
       )}
     </Page>

@@ -18,7 +18,6 @@ import type {
   GradesTable,
   NotificationsTable,
   PostsTable,
-  QuestionsTable,
   QuizAttemptsTable,
   SectionsTable,
   SubmissionsTable,
@@ -27,6 +26,11 @@ import type {
 import { hashPassword } from '../lib/password.js';
 import { newId, randomToken, round } from '../lib/util.js';
 import { gradeQuestion } from '../services/quiz.js';
+import { seedDemoEmail } from './demo-email.js';
+import { seedDemoGroups } from './demo-groups.js';
+import { seedCompletionDemo } from './demo-completion.js';
+import { insertDemoQuizQuestions, seedQuestionBankDemo, type DemoQuestionRow } from './demo-question-bank.js';
+import { seedDemoGradeCategories } from './demo-grade-categories.js';
 
 export interface SeedDemoOptions {
   /** An existing administrator for the demo. If omitted, the first admin is used (or one is created). */
@@ -1096,7 +1100,7 @@ export async function seedDemo(deps: Pick<AppDeps, 'db' | 'events'>, options: Se
   const enrolments: Insertable<EnrolmentsTable>[] = [];
   const sections: Insertable<SectionsTable>[] = [];
   const activities: Insertable<ActivitiesTable>[] = [];
-  const questions: Insertable<QuestionsTable>[] = [];
+  const questions: DemoQuestionRow[] = [];
   const completions: Insertable<CompletionsTable>[] = [];
   const submissions: Insertable<SubmissionsTable>[] = [];
   const grades: Insertable<GradesTable>[] = [];
@@ -1602,7 +1606,7 @@ export async function seedDemo(deps: Pick<AppDeps, 'db' | 'events'>, options: Se
   await insertChunks(db, 'enrolments', enrolments);
   await insertChunks(db, 'sections', sections);
   await insertChunks(db, 'activities', activities);
-  await insertChunks(db, 'questions', questions);
+  await insertDemoQuizQuestions(db, questions);
   await insertChunks(db, 'completions', completions);
   await insertChunks(db, 'submissions', submissions);
   await insertChunks(db, 'grades', grades);
@@ -1613,5 +1617,10 @@ export async function seedDemo(deps: Pick<AppDeps, 'db' | 'events'>, options: Se
   await insertChunks(db, 'calendarEvents', events);
   await insertChunks(db, 'notifications', notifications);
 
+  await seedDemoEmail(deps);
+  await seedDemoGroups(deps);
+  await seedQuestionBankDemo(deps); // after the quiz attempts: it fills in their question snapshots
+  await seedDemoGradeCategories(db);
+  await seedCompletionDemo(deps); // last: completion depends on the grade setup
   return { created: true, password, users, courses: courses.length };
 }

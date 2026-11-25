@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { Award, CircleHelp, Clock, ListOrdered, Play, RotateCcw, Target, Trophy, Users } from 'lucide-react';
+import { Award, CircleHelp, Clock, Hourglass, ListOrdered, Play, RotateCcw, Target, Trophy, Users } from 'lucide-react';
 import { Link, useNavigate } from 'react-router';
 import { toast } from 'sonner';
 import type { ActivityDetail, QuizAttemptSummary, QuizSettings } from '@shared/types';
@@ -13,6 +13,7 @@ import { activityPath } from '@/lib/activity';
 import { api, errorMessage } from '@/lib/api';
 import { formatDateTime, formatNumber, formatRelative, isPast } from '@/lib/utils';
 import { ActivityFrame } from './frame';
+import { NeedsGradingCard } from './QuizGrading';
 
 function Tile({ icon: Icon, label, value }: { icon: typeof Clock; label: string; value: string }) {
   return (
@@ -36,7 +37,7 @@ export function QuizView({ activity }: { activity: ActivityDetail<'quiz'> }) {
   const settings = activity.settings as QuizSettings;
   const isManager = activity.capabilities.includes('course:manageContent');
   const isStaff = activity.capabilities.includes('quiz:viewAllAttempts');
-  const finished = quiz.attempts.filter((a) => a.status === 'finished');
+  const finished = quiz.attempts.filter((a) => a.status !== 'in_progress');
   const remaining = settings.attemptsAllowed ? Math.max(0, settings.attemptsAllowed - finished.length) : null;
   const closed = !!activity.dueAt && isPast(activity.dueAt);
 
@@ -153,10 +154,14 @@ export function QuizView({ activity }: { activity: ActivityDetail<'quiz'> }) {
                   <span className="flex-1">
                     <span className="block font-medium">Attempt {a.attemptNumber}</span>
                     <span className="block text-xs text-muted-foreground">
-                      {a.status === 'finished' ? `Finished ${formatRelative(a.finishedAt)}` : `Started ${formatRelative(a.startedAt)}`}
+                      {a.status !== 'in_progress' ? `Finished ${formatRelative(a.finishedAt)}` : `Started ${formatRelative(a.startedAt)}`}
                     </span>
                   </span>
-                  {a.status === 'finished' ? (
+                  {a.status === 'needs_grading' ? (
+                    <Badge variant="warning">
+                      <Hourglass /> Waiting for grading
+                    </Badge>
+                  ) : a.status === 'finished' ? (
                     <span className="text-right">
                       <span className="block font-semibold tabular-nums">
                         {formatNumber(a.score)} / {formatNumber(a.maxScore)}
@@ -174,13 +179,15 @@ export function QuizView({ activity }: { activity: ActivityDetail<'quiz'> }) {
           </Card>
         )}
 
+        {isStaff && !!quiz.needsGrading && <NeedsGradingCard activity={activity} />}
+
         {isStaff && (
           <Card>
             <CardHeader title="Student attempts" description="Every attempt, newest first." icon={<Users className="size-4.5" />} />
-            {allAttempts && allAttempts.filter((a) => a.status === 'finished').length > 0 ? (
+            {allAttempts && allAttempts.filter((a) => a.status !== 'in_progress').length > 0 ? (
               <div className="divide-y border-t">
                 {allAttempts
-                  .filter((a) => a.status === 'finished')
+                  .filter((a) => a.status !== 'in_progress')
                   .slice(0, 50)
                   .map((a) => (
                     <Link
@@ -195,9 +202,15 @@ export function QuizView({ activity }: { activity: ActivityDetail<'quiz'> }) {
                           Attempt {a.attemptNumber} · {formatRelative(a.finishedAt)}
                         </span>
                       </span>
-                      <span className="font-semibold tabular-nums">
-                        {formatNumber(a.score)} / {formatNumber(a.maxScore)}
-                      </span>
+                      {a.status === 'needs_grading' ? (
+                        <Badge variant="warning">
+                          <Hourglass /> Needs grading
+                        </Badge>
+                      ) : (
+                        <span className="font-semibold tabular-nums">
+                          {formatNumber(a.score)} / {formatNumber(a.maxScore)}
+                        </span>
+                      )}
                     </Link>
                   ))}
               </div>

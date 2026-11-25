@@ -8,6 +8,7 @@ import {
   GraduationCap,
   LayoutDashboard,
   LogOut,
+  Medal,
   Megaphone,
   Menu,
   MessageCircle,
@@ -209,6 +210,8 @@ const NOTIFICATION_ICONS: Record<string, LucideIcon> = {
   announcement: Megaphone,
   forum: MessageCircle,
   enrolment: UserPlus,
+  completion: GraduationCap,
+  badge: Medal,
 };
 
 export function NotificationIcon({ type }: { type: string }) {

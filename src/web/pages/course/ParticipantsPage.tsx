@@ -4,6 +4,9 @@ import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { COURSE_ROLE_LABELS } from '@shared/permissions';
 import type { CourseRole, Participant } from '@shared/types';
+import { LinkCohortButton, LinkedCohorts } from '@/components/cohorts';
+import { GroupBadges, GroupFilter, useGroupFilter } from '@/components/groups';
+import { ParticipantBadgesDialog, ParticipantBadgesMenuItem } from '@/components/completion/participant-badges';
 import { Page } from '@/components/layout/shell';
 import { Avatar } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
@@ -121,6 +124,7 @@ export default function ParticipantsPage() {
   const [q, setQ] = useState('');
   const [role, setRole] = useState<'all' | CourseRole>('all');
   const [enrolling, setEnrolling] = useState(false);
+  const groupFilter = useGroupFilter(course.id);
   const key = ['participants', course.id];
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: key,
@@ -148,11 +152,13 @@ export default function ParticipantsPage() {
     return (data ?? []).filter(
       (p) =>
         (role === 'all' || p.role === role) &&
+        groupFilter.matches(p.user.id) &&
         (!term || p.user.name.toLowerCase().includes(term) || p.user.email?.toLowerCase().includes(term)),
     );
-  }, [data, q, role]);
+  }, [data, q, role, groupFilter.matches]);
   const count = (r: CourseRole) => (data ?? []).filter((p) => p.role === r).length;
   const showDetails = !!data?.some((p) => p.user.email);
+  const showGroups = !!data?.some((p) => p.groups?.length);
 
   return (
     <Page>
@@ -176,12 +182,15 @@ export default function ParticipantsPage() {
             { value: 'student', label: 'Students', count: count('student') },
           ]}
         />
+        <GroupFilter filter={groupFilter} />
         {manage && (
           <Button className="sm:ml-auto" onClick={() => setEnrolling(true)}>
             <UserPlus /> Enrol people
           </Button>
         )}
+        {manage && <LinkCohortButton course={course} onLinked={refresh} />}
       </div>
+      {manage && <LinkedCohorts course={course} onChange={refresh} />}
 
       {error ? (
         <ErrorState error={error} onRetry={() => refetch()} />
@@ -197,6 +206,7 @@ export default function ParticipantsPage() {
                 <tr>
                   <th className="px-5 py-3 font-medium">Name</th>
                   <th className="px-3 py-3 font-medium">Role</th>
+                  {showGroups && <th className="hidden px-3 py-3 font-medium md:table-cell">Groups</th>}
                   {showDetails && <th className="hidden px-3 py-3 font-medium md:table-cell">Progress</th>}
                   {showDetails && <th className="hidden px-3 py-3 font-medium whitespace-nowrap lg:table-cell">Last access</th>}
                   {manage && <th className="w-12 px-3 py-3" />}
@@ -214,6 +224,7 @@ export default function ParticipantsPage() {
                             {p.user.id === me?.id && <span className="ml-1.5 text-xs font-normal text-muted-foreground">(you)</span>}
                           </p>
                           {p.user.email && <p className="truncate text-xs text-muted-foreground">{p.user.email}</p>}
+                          {showGroups && <GroupBadges groups={p.groups} className="mt-1 md:hidden" />}
                         </div>
                       </div>
                     </td>
@@ -223,6 +234,11 @@ export default function ParticipantsPage() {
                         {p.status === 'suspended' && <Badge variant="danger">Suspended</Badge>}
                       </div>
                     </td>
+                    {showGroups && (
+                      <td className="hidden px-3 py-3 md:table-cell">
+                        <GroupBadges groups={p.groups} />
+                      </td>
+                    )}
                     {showDetails && (
                       <td className="hidden px-3 py-3 md:table-cell">
                         {p.progress != null ? (
@@ -261,6 +277,7 @@ export default function ParticipantsPage() {
                                 </DropdownMenuCheckItem>
                               ))}
                               <DropdownMenuSeparator />
+                              <ParticipantBadgesMenuItem course={course} participant={p} />
                               <DropdownMenuItem
                                 onSelect={() =>
                                   update.mutate({ id: p.enrolmentId, body: { status: p.status === 'active' ? 'suspended' : 'active' } })
@@ -298,6 +315,7 @@ export default function ParticipantsPage() {
         </Card>
       )}
       <EnrolDialog open={enrolling} onOpenChange={setEnrolling} courseId={course.id} onDone={refresh} />
+      <ParticipantBadgesDialog course={course} />
     </Page>
   );
 }

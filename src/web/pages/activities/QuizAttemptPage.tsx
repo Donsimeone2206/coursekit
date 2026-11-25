@@ -1,133 +1,38 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Check, CircleCheck, CircleX, Clock, Cloud, CloudOff, Lightbulb, LoaderCircle, Send, Trophy, X } from 'lucide-react';
+import {
+  ArrowLeft,
+  ArrowRight,
+  CircleCheck,
+  CircleX,
+  Clock,
+  Cloud,
+  CloudOff,
+  Hourglass,
+  Lightbulb,
+  LoaderCircle,
+  Send,
+  Trophy,
+} from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router';
 import { toast } from 'sonner';
-import type { AttemptAnswer, Question, QuizAttempt } from '@shared/types';
+import type { AttemptAnswer, QuizAttempt, QuizGradingItem } from '@shared/types';
 import { Page } from '@/components/layout/shell';
 import { InlineMarkdown, Markdown } from '@/components/markdown';
+import { EssayFeedback, EssayMarkForm } from '@/components/questions/EssayGrading';
+import { formatMark, isAnswered, TYPE_META, wordLimitIssue } from '@/components/questions/meta';
+import { QuestionAnswer } from '@/components/questions/QuestionAnswer';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { useConfirm } from '@/components/ui/confirm';
-import { Input } from '@/components/ui/form';
 import { ErrorState, ProgressRing, Skeleton } from '@/components/ui/misc';
 import { activityPath } from '@/lib/activity';
 import { ApiError, api, errorMessage } from '@/lib/api';
 import { useNow, useTitle } from '@/lib/hooks';
-import { cn, formatDateTime, formatNumber } from '@/lib/utils';
+import { cn, formatDateTime, plural } from '@/lib/utils';
 import NotFoundPage from '../NotFoundPage';
 import { useInvalidateCourse } from '../course/context';
-
-const TYPE_HINT: Record<Question['type'], string> = {
-  single: 'Choose one answer',
-  multiple: 'Select all that apply',
-  truefalse: 'True or false',
-  short: 'Type your answer',
-  numeric: 'Enter a number',
-};
-
-function isAnswered(q: Question, a: AttemptAnswer | undefined) {
-  if (!a) return false;
-  return q.type === 'short' || q.type === 'numeric' ? !!a.text?.trim() : !!a.optionIds?.length;
-}
-
-function QuestionInput({
-  question,
-  answer,
-  onChange,
-  review,
-  disabled,
-}: {
-  question: Question;
-  answer: AttemptAnswer | undefined;
-  onChange: (a: AttemptAnswer) => void;
-  review: boolean;
-  disabled: boolean;
-}) {
-  if (question.type === 'short' || question.type === 'numeric') {
-    return (
-      <div className="space-y-2">
-        <Input
-          value={answer?.text ?? ''}
-          disabled={disabled}
-          inputMode={question.type === 'numeric' ? 'decimal' : 'text'}
-          onChange={(e) => onChange({ text: e.target.value })}
-          placeholder={question.type === 'numeric' ? 'e.g. 42' : 'Your answer'}
-          className="h-11 max-w-md text-[15px]"
-          aria-label="Your answer"
-        />
-        {review && question.acceptedAnswers && (
-          <p className="text-sm text-muted-foreground">
-            Accepted answer{question.acceptedAnswers.length > 1 ? 's' : ''}:{' '}
-            <span className="font-medium text-foreground">
-              {question.acceptedAnswers.join(', ')}
-              {question.type === 'numeric' && question.tolerance ? ` (± ${question.tolerance})` : ''}
-            </span>
-          </p>
-        )}
-      </div>
-    );
-  }
-
-  const multiple = question.type === 'multiple';
-  const chosen = new Set(answer?.optionIds ?? []);
-  return (
-    <div className="grid gap-2" role={multiple ? 'group' : 'radiogroup'}>
-      {question.options.map((o, i) => {
-        const selected = chosen.has(o.id);
-        const correct = review ? o.correct : undefined;
-        return (
-          <button
-            key={o.id}
-            type="button"
-            disabled={disabled}
-            role={multiple ? 'checkbox' : 'radio'}
-            aria-checked={selected}
-            onClick={() => {
-              if (multiple) {
-                const next = new Set(chosen);
-                if (selected) next.delete(o.id);
-                else next.add(o.id);
-                onChange({ optionIds: [...next] });
-              } else onChange({ optionIds: [o.id] });
-            }}
-            className={cn(
-              'flex items-center gap-3 rounded-xl border bg-card px-4 py-3 text-left text-[15px] transition-all',
-              !disabled && 'hover:border-primary/50 hover:bg-primary/[0.02]',
-              selected && !review && 'border-primary bg-primary/[0.05] ring-3 ring-primary/10',
-              review && correct && 'border-emerald-500/50 bg-emerald-500/[0.07]',
-              review && selected && !correct && 'border-red-500/50 bg-red-500/[0.06]',
-              disabled && 'cursor-default',
-            )}
-          >
-            <span
-              className={cn(
-                'grid size-6 shrink-0 place-items-center border text-xs font-semibold text-muted-foreground',
-                multiple ? 'rounded-md' : 'rounded-full',
-                selected && 'border-primary bg-primary text-primary-foreground',
-                review && correct && 'border-emerald-600 bg-emerald-600 text-white',
-                review && selected && !correct && 'border-red-500 bg-red-500 text-white',
-              )}
-            >
-              {review && correct ? (
-                <Check className="size-3.5" strokeWidth={3} />
-              ) : review && selected ? (
-                <X className="size-3.5" strokeWidth={3} />
-              ) : selected && multiple ? (
-                <Check className="size-3.5" strokeWidth={3} />
-              ) : (
-                String.fromCharCode(65 + i)
-              )}
-            </span>
-            <InlineMarkdown source={o.text} className="flex-1" />
-            {review && selected && <span className="text-xs font-medium text-muted-foreground">Your answer</span>}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
 
 function Countdown({ deadline, onExpire }: { deadline: string; onExpire: () => void }) {
   const now = useNow(1000);
@@ -147,6 +52,8 @@ function Countdown({ deadline, onExpire }: { deadline: string; onExpire: () => v
         'flex items-center gap-1.5 rounded-lg px-2.5 py-1 font-mono text-sm font-semibold tabular-nums',
         left < 60_000 ? 'bg-red-500/10 text-red-600' : left < 300_000 ? 'bg-amber-500/12 text-amber-600' : 'bg-muted',
       )}
+      role="timer"
+      aria-label={`${m} minutes ${s} seconds left`}
     >
       <Clock className="size-4" />
       {String(m).padStart(2, '0')}:{String(s).padStart(2, '0')}
@@ -154,30 +61,55 @@ function Countdown({ deadline, onExpire }: { deadline: string; onExpire: () => v
   );
 }
 
-function ReviewSummary({ attempt }: { attempt: QuizAttempt }) {
+function ReviewSummary({ attempt, next }: { attempt: QuizAttempt; next: QuizGradingItem | null }) {
+  const pending = attempt.status === 'needs_grading';
   const pct = attempt.maxScore ? ((attempt.score ?? 0) / attempt.maxScore) * 100 : 0;
-  const passed = attempt.passingPercent == null ? null : pct >= attempt.passingPercent;
-  const correct = attempt.results ? Object.values(attempt.results).filter((r) => r.correct).length : null;
+  const passed = pending || attempt.passingPercent == null ? null : pct >= attempt.passingPercent;
+  const correct = attempt.results && attempt.review ? Object.values(attempt.results).filter((r) => r.correct).length : null;
   return (
     <Card className="mb-6 overflow-hidden">
       <div className="flex flex-col items-center gap-6 p-6 sm:flex-row">
-        <ProgressRing
-          value={pct}
-          size={112}
-          stroke={9}
-          className={cn(passed === false ? 'text-red-500' : 'text-primary')}
-          label={<span className="text-2xl font-semibold">{Math.round(pct)}%</span>}
-        />
+        {pending ? (
+          <span className="grid size-28 shrink-0 place-items-center rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400">
+            <Hourglass className="size-10" aria-hidden />
+          </span>
+        ) : (
+          <ProgressRing
+            value={pct}
+            size={112}
+            stroke={9}
+            className={cn(passed === false ? 'text-red-500' : 'text-primary')}
+            label={<span className="text-2xl font-semibold">{Math.round(pct)}%</span>}
+          />
+        )}
         <div className="flex-1 text-center sm:text-left">
           <p className="flex items-center justify-center gap-2 text-sm font-medium text-muted-foreground sm:justify-start">
-            <Trophy className="size-4" /> Attempt {attempt.attemptNumber} · finished {formatDateTime(attempt.finishedAt)}
+            <Trophy className="size-4" />
+            {attempt.user && attempt.canGrade ? `${attempt.user.name} · ` : ''}Attempt {attempt.attemptNumber} · handed in{' '}
+            {formatDateTime(attempt.finishedAt)}
           </p>
-          <p className="mt-1 text-3xl font-semibold tracking-tight tabular-nums">
-            {formatNumber(attempt.score)}{' '}
-            <span className="text-lg font-normal text-muted-foreground">/ {formatNumber(attempt.maxScore)} points</span>
-          </p>
+          {pending ? (
+            <>
+              <p className="mt-1 text-2xl font-semibold tracking-tight">Score pending</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {attempt.canGrade
+                  ? `${plural(attempt.pendingCount, 'written answer')} to mark below. The grade is recorded when every answer has a mark.`
+                  : 'Your written answers are waiting to be marked. Your score appears once your teacher has graded them.'}
+              </p>
+            </>
+          ) : (
+            <p className="mt-1 text-3xl font-semibold tracking-tight tabular-nums">
+              {formatMark(attempt.score)}{' '}
+              <span className="text-lg font-normal text-muted-foreground">/ {formatMark(attempt.maxScore)} points</span>
+            </p>
+          )}
           <div className="mt-3 flex flex-wrap justify-center gap-2 sm:justify-start">
-            {correct != null && (
+            {pending && (
+              <Badge variant="warning">
+                <Hourglass /> Waiting for grading
+              </Badge>
+            )}
+            {correct != null && !pending && (
               <Badge variant="neutral">
                 {correct} of {attempt.questions.length} correct
               </Badge>
@@ -188,11 +120,20 @@ function ReviewSummary({ attempt }: { attempt: QuizAttempt }) {
             {!attempt.review && <Badge variant="outline">Correct answers are hidden for now</Badge>}
           </div>
         </div>
-        <Button asChild variant="outline">
-          <Link to={activityPath(attempt.course.slug, attempt.activityId)}>
-            <ArrowLeft /> Back to quiz
-          </Link>
-        </Button>
+        <div className="flex shrink-0 flex-col gap-2">
+          {next && (
+            <Button asChild>
+              <Link to={`/courses/${attempt.course.slug}/attempts/${next.attemptId}`}>
+                Next to mark: {next.user.name.split(' ')[0]} <ArrowRight />
+              </Link>
+            </Button>
+          )}
+          <Button asChild variant="outline">
+            <Link to={activityPath(attempt.course.slug, attempt.activityId)}>
+              <ArrowLeft /> Back to quiz
+            </Link>
+          </Button>
+        </div>
       </div>
     </Card>
   );
@@ -211,6 +152,13 @@ export default function QuizAttemptPage() {
     refetch,
   } = useQuery({ queryKey: key, queryFn: () => api.get<QuizAttempt>(`/attempts/${attemptId}`) });
   useTitle(attempt?.quizTitle);
+
+  const grading = useQuery({
+    queryKey: ['grading', attempt?.activityId],
+    queryFn: () => api.get<QuizGradingItem[]>(`/activities/${attempt!.activityId}/grading`),
+    enabled: !!attempt?.canGrade,
+  });
+  const next = attempt?.canGrade ? (grading.data?.find((g) => g.attemptId !== attempt.id) ?? null) : null;
 
   const [answers, setAnswers] = useState<Record<string, AttemptAnswer>>({});
   const [loadedFor, setLoadedFor] = useState<string | null>(null);
@@ -259,7 +207,7 @@ export default function QuizAttemptPage() {
       if (pending.current) clearTimeout(pending.current);
       qc.setQueryData(key, result);
       window.scrollTo({ top: 0, behavior: 'smooth' });
-      toast.success('Quiz submitted!');
+      toast.success(result.status === 'needs_grading' ? 'Quiz handed in. Your written answers will be marked soon.' : 'Quiz submitted!');
       await invalidate(result.course.slug);
     },
     onError: (err) => toast.error(errorMessage(err)),
@@ -271,6 +219,15 @@ export default function QuizAttemptPage() {
       submit.mutate();
     }
   }, [submit]);
+
+  const graded = async (next: QuizAttempt) => {
+    qc.setQueryData(key, next);
+    await Promise.all([
+      qc.invalidateQueries({ queryKey: ['grading', next.activityId] }),
+      qc.invalidateQueries({ queryKey: ['attempts', next.activityId] }),
+      qc.invalidateQueries({ queryKey: ['activity', next.activityId] }),
+    ]);
+  };
 
   if (isLoading) {
     return (
@@ -293,13 +250,17 @@ export default function QuizAttemptPage() {
 
   const finish = async () => {
     const missing = attempt.questions.length - answeredCount;
-    const ok = await confirm({
-      title: 'Submit your answers?',
-      description: missing
-        ? `You haven't answered ${missing} question${missing === 1 ? '' : 's'}. You can't change your answers after submitting.`
-        : "You can't change your answers after submitting.",
-      confirmLabel: 'Submit quiz',
-    });
+    const lengths = attempt.questions
+      .map((q, i) => ({ i, issue: q.type === 'essay' ? wordLimitIssue(q, answers[q.id]?.text) : null }))
+      .filter((x) => x.issue);
+    const notes = [
+      missing ? `You haven't answered ${plural(missing, 'question')}.` : '',
+      ...lengths.map(
+        (x) => `Your answer to question ${x.i + 1} is ${x.issue === 'long' ? 'over the word limit' : 'shorter than suggested'}.`,
+      ),
+      "You can't change your answers after submitting.",
+    ].filter(Boolean);
+    const ok = await confirm({ title: 'Submit your answers?', description: notes.join(' '), confirmLabel: 'Submit quiz' });
     if (ok) submit.mutate();
   };
 
@@ -314,7 +275,7 @@ export default function QuizAttemptPage() {
                 {answeredCount} of {attempt.questions.length} answered
               </p>
             </div>
-            <span className="hidden items-center gap-1.5 text-xs text-muted-foreground sm:flex">
+            <span className="hidden items-center gap-1.5 text-xs text-muted-foreground sm:flex" aria-live="polite">
               {saveState === 'saving' ? (
                 <LoaderCircle className="size-3.5 animate-spin" />
               ) : saveState === 'error' ? (
@@ -338,7 +299,7 @@ export default function QuizAttemptPage() {
         </div>
       )}
       <Page className="max-w-5xl">
-        {!inProgress && <ReviewSummary attempt={attempt} />}
+        {!inProgress && <ReviewSummary attempt={attempt} next={next} />}
         {inProgress && (
           <div className="mb-6">
             <Link
@@ -357,38 +318,54 @@ export default function QuizAttemptPage() {
           <div className="space-y-4">
             {attempt.questions.map((q, i) => {
               const result = attempt.results?.[q.id];
+              const waiting = !!result?.pending;
               return (
                 <Card
                   key={q.id}
                   id={`q-${q.id}`}
                   className={cn(
                     'scroll-mt-32 p-5 sm:p-6',
-                    result && (result.correct ? 'border-emerald-500/40' : result.partial ? 'border-amber-500/40' : 'border-red-500/30'),
+                    result &&
+                      !waiting &&
+                      (result.correct ? 'border-emerald-500/40' : result.partial ? 'border-amber-500/40' : 'border-red-500/30'),
+                    waiting && 'border-amber-500/40 border-dashed',
                   )}
                 >
                   <div className="mb-3 flex items-center justify-between gap-3">
                     <p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-                      Question {i + 1} · {TYPE_HINT[q.type]}
+                      Question {i + 1} · {TYPE_META[q.type].hint}
                     </p>
-                    {result ? (
+                    {waiting ? (
+                      <Badge variant="warning">
+                        <Hourglass /> {attempt.canGrade ? 'Needs marking' : 'Being marked'} · {formatMark(q.points)} pt
+                        {q.points === 1 ? '' : 's'}
+                      </Badge>
+                    ) : result ? (
                       <Badge variant={result.correct ? 'success' : result.partial ? 'warning' : 'danger'}>
                         {result.correct ? <CircleCheck /> : <CircleX />}
-                        {formatNumber(result.points)} / {formatNumber(result.maxPoints)}
+                        {formatMark(result.points)} / {formatMark(result.maxPoints)}
                       </Badge>
                     ) : (
                       <span className="text-xs text-muted-foreground">
-                        {formatNumber(q.points)} point{q.points === 1 ? '' : 's'}
+                        {formatMark(q.points)} point{q.points === 1 ? '' : 's'}
                       </span>
                     )}
                   </div>
                   <Markdown source={q.prompt} className="mb-4 text-[15px] font-medium [&_p]:my-0" />
-                  <QuestionInput
+                  <QuestionAnswer
                     question={q}
                     answer={answers[q.id]}
                     onChange={(a) => update(q.id, a)}
                     review={!!attempt.review}
                     disabled={!inProgress}
                   />
+                  {q.type === 'essay' &&
+                    !inProgress &&
+                    (attempt.canGrade ? (
+                      <EssayMarkForm attempt={attempt} question={q} onSaved={graded} />
+                    ) : (
+                      <EssayFeedback result={result} />
+                    ))}
                   {attempt.review && q.explanation && (
                     <div className="mt-4 flex gap-3 rounded-lg bg-sky-500/[0.07] px-4 py-3 text-sm">
                       <Lightbulb className="mt-0.5 size-4 shrink-0 text-sky-600 dark:text-sky-400" />
@@ -416,12 +393,14 @@ export default function QuizAttemptPage() {
                   <a
                     key={q.id}
                     href={`#q-${q.id}`}
+                    aria-label={`Question ${i + 1}`}
                     className={cn(
                       'grid aspect-square place-items-center rounded-md border text-xs font-semibold transition-colors hover:border-primary',
                       answered && !result && 'border-primary bg-primary text-primary-foreground',
-                      result?.correct && 'border-emerald-600 bg-emerald-600 text-white',
-                      result && !result.correct && result.partial && 'border-amber-500 bg-amber-500 text-white',
-                      result && !result.correct && !result.partial && 'border-red-500 bg-red-500 text-white',
+                      result?.pending && 'border-dashed border-amber-500 bg-amber-500/15 text-amber-700 dark:text-amber-300',
+                      result && !result.pending && result.correct && 'border-emerald-600 bg-emerald-600 text-white',
+                      result && !result.pending && !result.correct && result.partial && 'border-amber-500 bg-amber-500 text-white',
+                      result && !result.pending && !result.correct && !result.partial && 'border-red-500 bg-red-500 text-white',
                     )}
                   >
                     {i + 1}

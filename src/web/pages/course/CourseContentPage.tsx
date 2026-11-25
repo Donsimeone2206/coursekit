@@ -20,6 +20,7 @@ import { useState } from 'react';
 import { Link } from 'react-router';
 import { toast } from 'sonner';
 import type { ActivitySummary, Announcement, CourseDetail, Section } from '@shared/types';
+import { CompletionCard } from '@/components/completion/completion-card';
 import { ActivityIcon } from '@/components/course';
 import { Page } from '@/components/layout/shell';
 import { Markdown } from '@/components/markdown';
@@ -508,7 +509,7 @@ export default function CourseContentPage() {
           </span>
         </div>
       )}
-      <div className="grid items-start gap-8 lg:grid-cols-[minmax(0,1fr)_300px]">
+      <div className="grid grid-cols-1 items-start gap-8 lg:grid-cols-[minmax(0,1fr)_300px]">
         <div className="space-y-4">
           {course.sections.length === 0 && (
             <EmptyState icon={Plus} title="This course is empty" description="Turn on edit mode to add the first section." />
@@ -533,6 +534,7 @@ export default function CourseContentPage() {
         </div>
 
         <aside className="space-y-5 lg:sticky lg:top-32">
+          <CompletionCard course={course} />
           {upcoming.length > 0 && (
             <Card>
               <CardHeader title="Coming up" icon={<CalendarClock className="size-4.5" />} />
