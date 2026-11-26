@@ -45,7 +45,8 @@ export async function seedPackagesDemo(base: Pick<AppDeps, 'db' | 'events'>): Pr
       id: sectionId,
       courseId: course.id,
       title: 'Accessibility',
-      summary: 'Two short interactive modules: the WCAG basics and a colour contrast challenge.',
+      summary:
+        'Four short interactive modules: accessibility basics (SCORM 1.2), a colour contrast challenge (xAPI), inclusive design (SCORM 2004 with sequencing) and screen reader basics (cmi5).',
       position: Number(position?.m ?? 0) + 1,
       visible: 1,
       createdAt: daysAgo(9),

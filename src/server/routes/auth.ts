@@ -3,9 +3,12 @@ import { z } from 'zod';
 import type { SessionInfo } from '../../shared/types.js';
 import { endSession, startSession } from '../auth/session.js';
 import { requireUser, type AppContext, type AppDeps, type AppEnv } from '../context.js';
+import type { UserRow } from '../db/schema.js';
+import { limitAddress } from '../lib/client-address.js';
 import { ApiError, badRequest, forbidden } from '../lib/http.js';
 import { readBody } from '../lib/http.js';
 import { hashPassword, verifyPassword } from '../lib/password.js';
+import { createFailureLimiter, createRateLimiter } from '../lib/rate-limit.js';
 import { emailSchema, imageUrlSchema, nameSchema, passwordSchema } from '../lib/schemas.js';
 import { now, num } from '../lib/util.js';
 import { seedDemo } from '../seed/demo.js';
@@ -15,6 +18,10 @@ import { createUser, normalizeEmail } from '../services/users.js';
 
 const WINDOW_MS = 15 * 60_000;
 const MAX_ATTEMPTS = 10;
+/** Per client address (see the trustProxy option), on top of the limits per email: failed sign-ins, and sign-ups. */
+const ADDRESS_SIGN_IN_FAILURES = 100;
+const ADDRESS_SIGN_UPS = 50;
+const SIGN_UP_WINDOW_MS = 60 * 60_000;
 const attempts = new Map<string, { count: number; resetAt: number }>();
 
 /** Small in-memory limiter for credential endpoints. */
@@ -34,7 +41,13 @@ function rateLimit(key: string) {
 
 export function authRoutes(deps: AppDeps) {
   const r = new Hono<AppEnv>();
-  const { db } = deps;
+  const { db, config } = deps;
+  // A whole school can sit behind one address, so these are generous. An address that doesn't tell clients
+  // apart (unknown, or behind a proxy while trustProxy is off: see limitAddress) only gets the limits per email.
+  const failedSignIns = createFailureLimiter(ADDRESS_SIGN_IN_FAILURES, WINDOW_MS);
+  const signUps = createRateLimiter(ADDRESS_SIGN_UPS, SIGN_UP_WINDOW_MS);
+  const tooManyFromAddress = (what: string) =>
+    new ApiError(429, `Too many ${what} from your network. Please wait a few minutes and try again.`, 'rate_limited');
 
   async function userCount() {
     const row = await db
@@ -94,8 +107,19 @@ export function authRoutes(deps: AppDeps) {
     );
     const email = normalizeEmail(input.email);
     rateLimit(`login:${email}`);
-    const user = await db.selectFrom('users').selectAll().where('email', '=', email).executeTakeFirst();
-    const valid = await verifyPassword(input.password, user?.passwordHash);
+    // A place among the failed sign-ins allowed per address, taken before the password check (so requests sent at
+    // the same time can't get past the limit) and kept only if the password is wrong.
+    const address = limitAddress(c, config);
+    const end = address ? await failedSignIns.begin(address) : () => {};
+    if (!end) throw tooManyFromAddress('failed sign-ins');
+    let user: UserRow | undefined;
+    let valid: boolean | undefined;
+    try {
+      user = await db.selectFrom('users').selectAll().where('email', '=', email).executeTakeFirst();
+      valid = await verifyPassword(input.password, user?.passwordHash);
+    } finally {
+      end(valid === false);
+    }
     if (!user || !valid) throw new ApiError(401, 'That email and password combination is not correct.', 'invalid_credentials');
     if (user.status !== 'active') throw forbidden('This account is suspended. Contact your administrator.');
 
@@ -111,6 +135,8 @@ export function authRoutes(deps: AppDeps) {
     const site = await getSiteSettings(db);
     if (!site.allowSignup) throw forbidden('Self-registration is turned off on this site.');
     const input = await readBody(c, z.object({ name: nameSchema, email: emailSchema, password: passwordSchema }));
+    const address = limitAddress(c, config);
+    if (address && !signUps.hit(address)) throw tooManyFromAddress('sign-ups');
     rateLimit(`register:${normalizeEmail(input.email)}`);
     const user = await createUser(deps, { ...input, role: 'student' });
     await startSession(c, deps, user);

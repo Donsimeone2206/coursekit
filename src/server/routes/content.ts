@@ -111,7 +111,7 @@ export function contentRoutes(deps: AppDeps) {
       c,
       z.object({
         sectionId: z.string(),
-        type: z.enum(['lesson', 'resource', 'assignment', 'quiz', 'forum', 'lti', 'package']),
+        type: z.enum(['lesson', 'resource', 'assignment', 'quiz', 'forum', 'lti', 'package', 'live']),
         title: z.string().trim().min(1, 'Add a title').max(200),
         description: markdownSchema().default(''),
         settings: z.record(z.string(), z.unknown()).default({}),
@@ -137,7 +137,7 @@ export function contentRoutes(deps: AppDeps) {
       throw badRequest(issue ? `${issue.path.map(String).join('.')}: ${issue.message}` : 'Invalid settings');
     }
     const settings = settingsResult.data as ActivitySettingsMap[ActivityType];
-    if (def.validate) await def.validate(db, access.course.id, settings as never);
+    if (def.validate) await def.validate(db, access.course.id, settings as never, { user, previous: null });
     if (input.type === 'resource') {
       const s = settings as ActivitySettingsMap['resource'];
       if (s.kind === 'link' && !s.url) throw badRequest('Add the link URL.');

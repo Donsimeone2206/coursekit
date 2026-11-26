@@ -28,6 +28,7 @@ import { sessionMiddleware } from '../auth/session.js';
 import { requireAdmin, requireUser, type AppDeps, type AppEnv } from '../context.js';
 import type { ActivityRow, CourseRow, UserRow } from '../db/schema.js';
 import type { LtiToolRow } from '../db/schema-lti.js';
+import { clientAddress, rateLimitKey } from '../lib/client-address.js';
 import { ApiError, badRequest, forbidden, notFound, parse, readBody, readQuery } from '../lib/http.js';
 import { newId, now, num, randomToken, sha256 } from '../lib/util.js';
 import { assertCan, assertWritable, loadActivityAccess, loadCourseAccess } from '../services/access.js';
@@ -186,8 +187,8 @@ type ContentItem = z.output<typeof contentItemSchema>;
 export function ltiRoutes(deps: AppDeps) {
   const r = new Hono<AppEnv>();
   const { db, config } = deps;
-  // Token requests: a verified tool is limited by its own bucket only; failed requests count per
-  // address (behind a reverse proxy that is the proxy's), so junk naming a tool can't lock it out.
+  // Token requests: a verified tool is limited by its own bucket only; failed requests count per client
+  // address (behind a reverse proxy, set trustProxy), so junk naming a tool can't lock it out.
   const limitByTool = rateLimiter(60, 60_000);
   const limitFailures = rateLimiter(60, 60_000);
 
@@ -235,6 +236,8 @@ export function ltiRoutes(deps: AppDeps) {
       clientId: newId(20),
       deploymentId: newId(12),
       status: input.status,
+      scopes: null, // every scope of the services allowed (Dynamic Registration narrows it to what the tool asked for)
+      domains: null, // only the tool URL's host (Dynamic Registration adds the domains the tool declared)
       createdBy: admin.id,
       createdAt: ts,
       updatedAt: ts,
@@ -299,7 +302,7 @@ export function ltiRoutes(deps: AppDeps) {
         description: t.description,
         toolUrl: t.toolUrl,
         deepLinking: !!t.deepLinkingUrl,
-        grades: !!t.allowAgs,
+        grades: allowedScopes(t).includes(SCOPES.score),
         status: t.status,
       }));
     return c.json(options);
@@ -594,11 +597,14 @@ export function ltiRoutes(deps: AppDeps) {
     const ids: string[] = [];
     let skipped = items.length - links.length;
     let updated = false;
+    // A line item (a grade column) only for a tool that may send scores to it, as deep_linking_settings says.
+    const canScore = allowedScopes(tool).includes(SCOPES.score);
     for (const item of links) {
-      if (item.url && !isOnToolDomain(item.url, tool.toolUrl)) {
+      if (item.url && !isOnToolDomain(item.url, tool)) {
         skipped++;
         continue;
       }
+      const lineItem = canScore ? item.lineItem : null;
       const custom = Object.fromEntries(
         Object.entries(item.custom ?? {})
           .filter(([k, v]) => LTI_CUSTOM_KEY.test(k) && ['string', 'number', 'boolean'].includes(typeof v))
@@ -612,8 +618,8 @@ export function ltiRoutes(deps: AppDeps) {
         launchUrl: item.url || null,
         custom,
         presentation: item.iframe ? 'embed' : item.window ? 'window' : (previous?.presentation ?? 'window'),
-        lineItemResourceId: item.lineItem?.resourceId ?? null,
-        lineItemTag: item.lineItem?.tag ?? null,
+        lineItemResourceId: lineItem?.resourceId ?? null,
+        lineItemTag: lineItem?.tag ?? null,
       } satisfies LtiSettings);
       if (!parsed.success) {
         skipped++;
@@ -629,7 +635,7 @@ export function ltiRoutes(deps: AppDeps) {
             title: item.title?.trim() ? title : target.title,
             ...(item.text != null ? { description: item.text } : {}),
             settings: JSON.stringify(parsed.data),
-            ...(item.lineItem && !graded ? { maxGrade: item.lineItem.scoreMaximum } : {}),
+            ...(lineItem && !graded ? { maxGrade: lineItem.scoreMaximum } : {}),
             updatedAt: ts,
           })
           .where('id', '=', target.id)
@@ -655,7 +661,7 @@ export function ltiRoutes(deps: AppDeps) {
         visible: 1,
         settings: JSON.stringify(parsed.data),
         dueAt: null,
-        maxGrade: item.lineItem ? item.lineItem.scoreMaximum : null,
+        maxGrade: lineItem ? lineItem.scoreMaximum : null,
         completion: DEFAULT_COMPLETION.lti,
         groupMode: null, // follow the course's group mode
         createdBy: user.id,
@@ -784,8 +790,7 @@ document.getElementById('close').addEventListener('click',function(){window.clos
       c.header('Retry-After', '60');
       return oauthError('invalid_request', 'Too many token requests. Try again in a minute.', 429);
     };
-    const address =
-      (c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)?.incoming?.socket?.remoteAddress ?? 'local';
+    const address = rateLimitKey(clientAddress(c, config) ?? 'unknown');
     // Counted only once a request has failed, never before verification: the client_id is public.
     const failed = (error: string, description: string, status: 400 | 401 = 401) =>
       limitFailures(address) ? oauthError(error, description, status) : tooMany();

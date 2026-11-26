@@ -29,6 +29,8 @@ export const COURSE_CAPABILITIES = [
   'grades:manage',
   /** See and take part in every group's work and discussions, whatever the group mode. Teachers and administrators. */
   'course:accessAllGroups',
+  /** Live classes (0.4.0): start sessions as a moderator or host, take attendance and manage recordings. */
+  'live:moderate',
 ] as const;
 
 export type CourseCapability = (typeof COURSE_CAPABILITIES)[number];
@@ -52,6 +54,7 @@ export const ROLE_CAPABILITIES: Record<CourseRole, readonly CourseCapability[]> 
     // (teaching assistants included), so only teachers change it, as in Moodle. Assistants still see every group.
     'completion:viewReport',
     'badges:award',
+    'live:moderate',
   ],
   student: ['course:view', 'course:viewParticipants', 'assignment:submit', 'quiz:attempt', 'forum:post'],
 };

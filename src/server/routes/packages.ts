@@ -1,9 +1,11 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
+import { PACKAGE_NAV_REQUESTS } from '../../shared/package-sequencing.js';
 import { requireUser, type AppDeps, type AppEnv } from '../context.js';
 import { ApiError, badRequest, notFound, readBody } from '../lib/http.js';
 import { assertCan, assertWritable, loadActivityAccess } from '../services/access.js';
 import { studentScope } from '../services/group-modes.js';
+import type { Cmi5LaunchInput } from '../packages/cmi5/launch.js';
 import { importPackage, launch, packageReport, playerInfo, toVersionInfo } from '../packages/service.js';
 import { PackageError } from '../packages/zip.js';
 
@@ -58,9 +60,15 @@ export function packageRoutes(deps: AppDeps) {
         attemptId: z.string().max(64).optional(),
         newAttempt: z.boolean().optional(),
         preview: z.boolean().optional(),
+        // SCORM 2004 navigation requests (see src/shared/package-sequencing.ts).
+        nav: z.enum(PACKAGE_NAV_REQUESTS).optional(),
+        sid: z.string().max(64).optional(),
+        deliveryId: z.string().max(32).nullable().optional(),
       }),
     );
-    return c.json(await launch(deps, access, input, new URL(c.req.url).origin));
+    // cmi5 courses: the learner's languages go into the cmi5LearnerPreferences document (cmi5/launch.ts).
+    const body: Cmi5LaunchInput = { ...input, languages: c.req.header('accept-language')?.slice(0, 500) ?? null };
+    return c.json(await launch(deps, access, body, new URL(c.req.url).origin));
   });
 
   r.get('/packages/:activityId/report', async (c) => {

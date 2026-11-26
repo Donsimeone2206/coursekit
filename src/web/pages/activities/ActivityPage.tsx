@@ -14,6 +14,7 @@ import NotFoundPage from '../NotFoundPage';
 import { AssignmentView } from './AssignmentView';
 import { ForumView } from './ForumView';
 import { ActivityFrame, useActivity } from './frame';
+import { LiveClassView } from './LiveClassView';
 import { PackageView } from './PackageView';
 import { QuizView } from './QuizView';
 
@@ -181,5 +182,7 @@ export default function ActivityPage() {
       );
     case 'package':
       return <PackageView activity={activity as ActivityDetail<'package'>} />;
+    case 'live':
+      return <LiveClassView activity={activity as ActivityDetail<'live'>} />;
   }
 }

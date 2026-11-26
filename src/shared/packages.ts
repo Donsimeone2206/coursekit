@@ -1,12 +1,14 @@
 /** API shapes for SCORM and xAPI package activities. */
+import type { PackageNavRequest, PackageSequencingInfo } from './package-sequencing.js';
 import type { PackageSettings, PublicUser } from './types.js';
 
-export type PackageKind = 'scorm12' | 'scorm2004' | 'xapi';
+export type PackageKind = 'scorm12' | 'scorm2004' | 'xapi' | 'cmi5';
 
 export const PACKAGE_KIND_LABELS: Record<PackageKind, string> = {
   scorm12: 'SCORM 1.2',
   scorm2004: 'SCORM 2004',
   xapi: 'xAPI (Tin Can)',
+  cmi5: 'cmi5',
 };
 
 export type PackageCompletionStatus = 'not attempted' | 'incomplete' | 'completed';
@@ -34,6 +36,8 @@ export interface PackageVersionInfo {
   totalBytes: number;
   createdAt: string;
   items: PackageItem[];
+  /** Parts of the manifest that were ignored or replaced by defaults when it was imported. */
+  warnings?: string[];
 }
 
 export interface PackageItemProgress {
@@ -57,6 +61,8 @@ export interface PackageAttemptInfo {
   finishedAt: string | null;
   /** The package version the attempt uses. */
   version: number;
+  /** The kind of that version: it can differ from the current one's, once the package was replaced. */
+  kind: PackageKind;
   items: Record<string, PackageItemProgress>;
 }
 
@@ -89,6 +95,15 @@ export interface PackageLaunchInput {
   newAttempt?: boolean | undefined;
   /** Staff: open without recording anything. */
   preview?: boolean | undefined;
+  /** SCORM 2004: a navigation request for the attempt (`itemId` is the target of choice). */
+  nav?: PackageNavRequest | undefined;
+  /** SCORM 2004: the page session the player just closed, so the server waits for its last commit. */
+  sid?: string | undefined;
+  /**
+   * SCORM 2004: the delivery the player shows (`sequencing.deliveryId`, null when nothing is open).
+   * A request for a delivery the attempt has moved on from (in another window) changes nothing.
+   */
+  deliveryId?: string | null | undefined;
 }
 
 export interface PackageLaunch {
@@ -99,6 +114,11 @@ export interface PackageLaunch {
   mode: 'normal' | 'review' | 'browse';
   display: PackageSettings['display'];
   items: PackageItem[];
+  /**
+   * SCORM 2004 attempts: what the sequencing rules allow now. `url` and `itemId` are empty strings
+   * when nothing is open (after Exit, at the end of the attempt, or when the learner has to choose).
+   */
+  sequencing?: PackageSequencingInfo;
 }
 
 export interface PackageReportRow {

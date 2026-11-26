@@ -1,4 +1,4 @@
-import { BookOpen, ClipboardList, Link2, ListChecks, MessagesSquare, Package, Puzzle, type LucideIcon } from 'lucide-react';
+import { BookOpen, ClipboardList, Link2, ListChecks, MessagesSquare, Package, Puzzle, Video, type LucideIcon } from 'lucide-react';
 import type { ActivityType } from '@shared/types';
 
 export const ACTIVITY_META: Record<ActivityType, { icon: LucideIcon; label: string; tint: string; solid: string }> = {
@@ -19,6 +19,7 @@ export const ACTIVITY_META: Record<ActivityType, { icon: LucideIcon; label: stri
   },
   lti: { icon: Puzzle, label: 'External tool', tint: 'bg-cyan-500/10 text-cyan-600 dark:text-cyan-400', solid: 'bg-cyan-500' },
   package: { icon: Package, label: 'Package', tint: 'bg-rose-500/10 text-rose-600 dark:text-rose-400', solid: 'bg-rose-500' },
+  live: { icon: Video, label: 'Live class', tint: 'bg-orange-500/10 text-orange-600 dark:text-orange-400', solid: 'bg-orange-500' },
 };
 
 export function activityPath(courseSlug: string, activityId: string) {

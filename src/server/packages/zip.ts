@@ -4,6 +4,7 @@
  * fflate's streaming inflater, which stops as soon as an entry produces more than it declared.
  */
 import { Inflate } from 'fflate';
+import { readZip64End, readZip64Extra } from './zip64.js';
 
 /** A problem with an uploaded package, explained for the teacher who uploaded it. */
 export class PackageError extends Error {}
@@ -84,12 +85,10 @@ export function readZipEntries(data: Uint8Array, limits: ZipLimits): ZipEntry[] 
     }
   }
   if (eocd < 0) throw new PackageError("That file isn't a zip archive (or it's damaged).");
-  const total = u16(data, eocd + 10);
-  const cdSize = u32(data, eocd + 12);
-  const cdOffset = u32(data, eocd + 16);
-  if (total === 0xffff || cdSize === 0xffffffff || cdOffset === 0xffffffff) {
-    throw new PackageError('Zip64 archives are not supported. Re-create the zip with a standard zip tool.');
-  }
+  let total = u16(data, eocd + 10);
+  let cdSize = u32(data, eocd + 12);
+  let cdOffset = u32(data, eocd + 16);
+  if (total === 0xffff || cdSize === 0xffffffff || cdOffset === 0xffffffff) ({ total, cdSize, cdOffset } = readZip64End(data, eocd));
   if (cdOffset + cdSize > data.length) throw new PackageError('The zip archive is damaged.');
   if (total > limits.maxFiles + 1000)
     throw new PackageError(`The package has too many files (the limit is ${limits.maxFiles.toLocaleString('en')}).`);
@@ -106,14 +105,17 @@ export function readZipEntries(data: Uint8Array, limits: ZipLimits): ZipEntry[] 
     const flags = u16(data, pos + 8);
     const method = u16(data, pos + 10);
     const crc = u32(data, pos + 16);
-    const compressedSize = u32(data, pos + 20);
-    const size = u32(data, pos + 24);
+    let compressedSize = u32(data, pos + 20);
+    let size = u32(data, pos + 24);
     const nameLength = u16(data, pos + 28);
     const extraLength = u16(data, pos + 30);
     const commentLength = u16(data, pos + 32);
     const external = u32(data, pos + 38);
-    const offset = u32(data, pos + 42);
+    let offset = u32(data, pos + 42);
     if (pos + 46 + nameLength > data.length) throw new PackageError('The zip archive is damaged.');
+    if (size === 0xffffffff || compressedSize === 0xffffffff || offset === 0xffffffff) {
+      ({ size, compressedSize, offset } = readZip64Extra(data, pos + 46 + nameLength, extraLength, { size, compressedSize, offset }));
+    }
     const raw = decoder.decode(data.subarray(pos + 46, pos + 46 + nameLength));
     pos += 46 + nameLength + extraLength + commentLength;
 
@@ -127,7 +129,6 @@ export function readZipEntries(data: Uint8Array, limits: ZipLimits): ZipEntry[] 
       throw new PackageError(
         `"${name}" uses a compression method Coursekit can't read. Re-create the zip with standard (deflate) compression.`,
       );
-    if (size === 0xffffffff || compressedSize === 0xffffffff) throw new PackageError('Zip64 archives are not supported.');
     const key = name.toLowerCase();
     if (seen.has(key)) throw new PackageError(`The zip contains "${name}" twice (file names must be unique, ignoring case).`);
     seen.add(key);

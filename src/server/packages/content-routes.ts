@@ -188,6 +188,7 @@ export function packageContentRoutes(deps: AppDeps) {
       } catch (err) {
         const status = (err as { status?: number }).status;
         if (status === 403 || status === 404) return c.json({ ok: false, error: 'forbidden' }, status);
+        if (status === 409 || status === 413) return c.json({ ok: false, error: status === 409 ? 'busy' : 'too_large' }, status);
         throw err;
       }
     },
@@ -197,7 +198,9 @@ export function packageContentRoutes(deps: AppDeps) {
     const t = await token(c);
     const ctx = t && (await loadRuntimeContext(db, t.token));
     if (!t || !ctx || !(await stillAllowed(t.token))) return denied(c, 403, `/* ${expired} */`);
-    const boot = await runtimeBoot(db, ctx, t.raw, originOf(c));
+    const boot = await runtimeBoot(deps, ctx, t.raw, originOf(c));
+    // SCORM 2004: the link belongs to a delivery the learner has since moved on from.
+    if (!boot) return denied(c, 403, `/* ${expired} */`);
     contentHeaders(c, 'text/javascript; charset=utf-8', 'no-store');
     return c.body(runtimeScript(boot));
   });
@@ -228,7 +231,8 @@ export function packageContentRoutes(deps: AppDeps) {
     if (!stream) return denied(c, 404, 'Not found.');
 
     const type = mimeFor(file.path);
-    if (isHtml(file.path) && file.size <= MAX_INJECT_BYTES) {
+    // cmi5 AUs talk to the LRS themselves: no SCORM run-time goes into their pages.
+    if (isHtml(file.path) && file.size <= MAX_INJECT_BYTES && ctx.version.kind !== 'cmi5') {
       const html = injectRuntime(await readAll(stream), `${CONTENT_PREFIX}${t.raw}/__coursekit/runtime.js`);
       contentHeaders(c, type, 'no-store');
       c.header('Content-Length', String(html.length));

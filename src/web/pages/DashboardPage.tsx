@@ -46,6 +46,17 @@ function bucket(item: TimelineItem): string {
   return 'Later';
 }
 
+/** Live class sessions in the upcoming list: "Live now", "Starts today at 10:00". */
+function liveLabel(item: TimelineItem): string {
+  const start = new Date(item.dueAt).getTime();
+  const end = item.endsAt ? new Date(item.endsAt).getTime() : start;
+  if (Date.now() >= start && Date.now() < end) return 'Live now';
+  return dueLabel(item.dueAt, true).replace(/^Due/, 'Starts');
+}
+
+const isLiveNow = (item: TimelineItem) =>
+  item.type === 'live' && Date.now() >= new Date(item.dueAt).getTime() && Date.now() < new Date(item.endsAt ?? item.dueAt).getTime();
+
 const STATUS: Record<TimelineItem['status'], { label: string; variant: 'neutral' | 'danger' | 'success' | 'info' }> = {
   todo: { label: 'To do', variant: 'neutral' },
   overdue: { label: 'Overdue', variant: 'danger' },
@@ -101,12 +112,20 @@ function Timeline({ items }: { items: TimelineItem[] }) {
                       <span className="size-2 shrink-0 rounded-[3px]" style={coverDot(item.course.coverColor)} />
                       <span className="truncate">{item.course.title}</span>
                       <span>·</span>
-                      <span className={cn('shrink-0', item.status === 'overdue' && 'text-destructive')}>{dueLabel(item.dueAt, done)}</span>
+                      <span className={cn('shrink-0', item.status === 'overdue' && 'text-destructive')}>
+                        {item.type === 'live' ? liveLabel(item) : dueLabel(item.dueAt, done)}
+                      </span>
                     </p>
                   </div>
-                  <Badge variant={STATUS[item.status].variant} className="hidden sm:inline-flex">
-                    {STATUS[item.status].label}
-                  </Badge>
+                  {item.type === 'live' ? (
+                    <Badge variant={isLiveNow(item) ? 'danger' : 'info'} className="hidden sm:inline-flex">
+                      {isLiveNow(item) ? 'Live' : 'Live class'}
+                    </Badge>
+                  ) : (
+                    <Badge variant={STATUS[item.status].variant} className="hidden sm:inline-flex">
+                      {STATUS[item.status].label}
+                    </Badge>
+                  )}
                 </Link>
               );
             })}
@@ -301,7 +320,7 @@ export default function DashboardPage() {
                   <Card>
                     <CardHeader
                       title="Upcoming"
-                      description="Deadlines across your courses."
+                      description="Deadlines and live classes across your courses."
                       icon={<CalendarClock className="size-4.5" />}
                     />
                     <Timeline items={data.timeline} />

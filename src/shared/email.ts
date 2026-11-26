@@ -16,7 +16,7 @@ export const EMAIL_FREQUENCY_LABELS: Record<EmailFrequency, string> = {
 };
 
 /** User-facing groups of notification types that people can opt out of one by one. */
-export type EmailCategoryId = 'announcements' | 'discussions' | 'grades' | 'courses' | 'achievements';
+export type EmailCategoryId = 'announcements' | 'discussions' | 'grades' | 'courses' | 'achievements' | 'live';
 
 export interface EmailCategory {
   id: EmailCategoryId;
@@ -30,6 +30,11 @@ export const EMAIL_CATEGORIES: readonly EmailCategory[] = [
   { id: 'grades', label: 'Grades and feedback', description: 'When your work is graded or gets feedback.' },
   { id: 'courses', label: 'Courses and enrolment', description: 'When you are added to a course, and other course updates.' },
   { id: 'achievements', label: 'Badges and certificates', description: 'Badges, certificates and completed courses.' },
+  {
+    id: 'live',
+    label: 'Live classes',
+    description: 'Live class sessions that are scheduled, moved or cancelled, and reminders before they start.',
+  },
 ];
 
 export const EMAIL_CATEGORY_IDS: readonly EmailCategoryId[] = EMAIL_CATEGORIES.map((c) => c.id);
@@ -54,6 +59,8 @@ export const NOTIFICATION_TYPE_CATEGORIES: Readonly<Record<string, EmailCategory
   badge: 'achievements',
   certificate: 'achievements',
   completion: 'achievements',
+  // live.scheduled, live.moved, live.cancelled and live.reminder (0.4.0)
+  live: 'live',
 };
 
 export function emailCategoryOf(type: string): EmailCategoryId {

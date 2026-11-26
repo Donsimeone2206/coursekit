@@ -12,6 +12,10 @@ import * as packages from './migrations/008_packages.js';
 import * as groupModes from './migrations/009_group_modes.js';
 import * as questionSharing from './migrations/010_question_sharing.js';
 import * as openBadges from './migrations/011_open_badges.js';
+import * as scormSequencing from './migrations/012_scorm_sequencing.js';
+import * as cmi5 from './migrations/013_cmi5.js';
+import * as ltiRegistration from './migrations/014_lti_registration.js';
+import * as liveClasses from './migrations/015_live_classes.js';
 import { createNodeSqliteDatabase } from './node-sqlite.js';
 import type { Database } from './schema.js';
 import type { DB, DatabaseKind } from './types.js';
@@ -31,6 +35,10 @@ export const migrations: Record<string, Migration> = {
   '009_group_modes': groupModes,
   '010_question_sharing': questionSharing,
   '011_open_badges': openBadges,
+  '012_scorm_sequencing': scormSequencing,
+  '013_cmi5': cmi5,
+  '014_lti_registration': ltiRegistration,
+  '015_live_classes': liveClasses,
 };
 
 export async function createDatabase(url: string): Promise<{ db: DB; kind: DatabaseKind }> {

@@ -8,10 +8,12 @@ import { HTTPException } from 'hono/http-exception';
 import { logger } from 'hono/logger';
 import { secureHeaders } from 'hono/secure-headers';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
+import { getPath } from 'hono/utils/url';
 import type { ApiErrorBody } from '../shared/types.js';
 import { sessionMiddleware } from './auth/session.js';
 import type { AppDeps, AppEnv } from './context.js';
 import { ApiError } from './lib/http.js';
+import { cmi5ApiRoutes, cmi5PublicRoutes } from './packages/cmi5/routes.js';
 import { packageContentRoutes, packageHeaderOverrides } from './packages/content-routes.js';
 import { xapiRoutes } from './packages/xapi.js';
 import { activityRoutes } from './routes/activities.js';
@@ -30,6 +32,8 @@ import { forumRoutes } from './routes/forums.js';
 import { gradeCategoryRoutes } from './routes/grade-categories.js';
 import { gradeRoutes } from './routes/grades.js';
 import { ltiRoutes } from './routes/lti.js';
+import { ltiRegistrationRoutes } from './routes/lti-registration.js';
+import { liveRoutes } from './routes/live.js';
 import { groupRoutes } from './routes/groups.js';
 import { meRoutes } from './routes/me.js';
 import { openBadgeRoutes } from './routes/open-badges.js';
@@ -49,9 +53,18 @@ function errorBody(message: string, code: string, issues?: ApiErrorBody['error']
   return { error: { message, code, ...(issues ? { issues } : {}) } };
 }
 
+/**
+ * The path routes match. Under /xapi/ repeated slashes count as one: the LRS endpoint ends with "/", and AUs that
+ * add "/statements" to it (as ADL's cmi5 test AUs do) ask for /xapi//statements.
+ */
+function routePath(request: Request): string {
+  const path = getPath(request);
+  return path.startsWith('/xapi/') ? path.replace(/\/{2,}/g, '/') : path;
+}
+
 /** Builds the Hono application: the REST API under /api and, optionally, the web UI. */
 export function createApp(deps: AppDeps): Hono<AppEnv> {
-  const app = new Hono<AppEnv>();
+  const app = new Hono<AppEnv>({ getPath: routePath });
 
   app.onError((err, c) => {
     if (err instanceof ApiError) {
@@ -66,6 +79,15 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
   });
 
   app.notFound((c) => c.json(errorBody('Not found.', 'not_found'), 404));
+
+  // Mounted in another Hono app (`host.route('/', lms.app)`), routes match with the host's path, which keeps
+  // the repeated slashes: send those requests through this app, which collapses them (see routePath).
+  app.use('/xapi/*', async (c, next) => {
+    if (!c.req.path.includes('//')) return next();
+    const url = new URL(c.req.url);
+    url.pathname = url.pathname.replace(/\/{2,}/g, '/');
+    return app.fetch(new Request(url, c.req.raw), c.env);
+  });
 
   // Package content (/content/*) and the xAPI LRS (/xapi/*) relax X-Frame-Options and CORP; see content-routes.ts.
   app.use('*', packageHeaderOverrides());
@@ -117,16 +139,24 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
   app.route('/', emailRoutes(deps));
   // Public Open Badges documents under /openbadges/ (CORS, embeddable), plus the sharing and issuer APIs under /api
   app.route('/', openBadgeRoutes(deps));
+  // LTI Dynamic Registration: /api/admin/lti/registrations*, /lti/openid-configuration and /lti/registration (before ltiRoutes' /lti/* 404)
+  app.route('/', ltiRegistrationRoutes(deps));
   // /api/admin/lti/*, /api/courses/:id/lti/tools, /api/lti/* and the LTI 1.3 endpoints under /lti (tools post to them from other sites)
   app.route('/', ltiRoutes(deps));
   // Sandboxed SCORM/xAPI package content (/content/<token>/...) and the xAPI LRS (/xapi/...): token auth, no cookies.
   app.route('/', packageContentRoutes(deps));
   app.route('/', xapiRoutes(deps));
+  // cmi5: the one-time fetch URL AUs call from any origin (/cmi5/fetch/...) and the returnURL page (/cmi5/return/...).
+  app.route('/', cmi5PublicRoutes(deps));
+  // Live classes: /api/admin/live, /api/live/*, and outside /api the join redirect (/live/join/*), BigBlueButton
+  // callbacks (/live/bbb/*, signed per room) and Zoom webhooks (/live/zoom/webhook, signed by Zoom).
+  app.route('/', liveRoutes(deps));
   app.route('/api/courses', completionRoutes(deps));
   app.route('/api', certificateRoutes(deps));
   app.route('/api', badgeRoutes(deps));
   app.route('/api', questionBankRoutes(deps));
   app.route('/api', packageRoutes(deps));
+  app.route('/api', cmi5ApiRoutes(deps));
   app.route('/api', questionSharingRoutes(deps));
   app.all('/api/*', (c) => c.json(errorBody('Not found.', 'not_found'), 404));
 

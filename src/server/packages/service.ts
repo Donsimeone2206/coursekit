@@ -8,6 +8,7 @@ import type {
   PackageAttemptInfo,
   PackageCompletionStatus,
   PackageItemProgress,
+  PackageKind,
   PackageLaunch,
   PackageLaunchInput,
   PackagePlayerInfo,
@@ -20,15 +21,28 @@ import type { AppDeps } from '../context.js';
 import type { ActivityRow, UserRow } from '../db/schema.js';
 import type { PackageAttemptRow, PackageScoStateRow, PackageVersionRow } from '../db/schema-packages.js';
 import type { DB } from '../db/types.js';
-import { badRequest, forbidden, notFound } from '../lib/http.js';
+import { badRequest, conflict, forbidden, notFound } from '../lib/http.js';
 import { newId, now, parseJson, randomToken, round } from '../lib/util.js';
 import type { ActivityAccess } from '../services/access.js';
 import { parseSettings } from '../services/activity-types.js';
 import { upsertGrade } from '../services/grades.js';
 import { markCompleted } from '../services/progress.js';
+import { launchCmi5 } from './cmi5/launch.js';
+import { cmi5AttemptResult } from './cmi5/results.js';
+import { cmi5Of, parseCmi5, standaloneCmi5 } from './cmi5/structure.js';
 import { parseScormManifest, parseTincan, type PackageStructure, type StructureItem } from './manifest.js';
 import { mimeFor } from './mime.js';
-import { createModel, type RuntimeBoot, type ScormVersion } from './runtime.js';
+import { createModel, type ModelInit, type RuntimeBoot, type ScormVersion } from './runtime.js';
+import {
+  refreshSequencedAttempt,
+  runtimeReport,
+  sequencedBoot,
+  sequencedCommit,
+  sequencedLaunch,
+  sequencedRuntime,
+  sequencedSummary,
+  type SequencedRuntime,
+} from './sequencing/service.js';
 import { packageSecret, signToken, type PackageToken, type TokenPurpose } from './tokens.js';
 import { DEFAULT_MAX_FILES, extractEntry, PackageError, readZipEntries } from './zip.js';
 
@@ -88,7 +102,11 @@ export function toVersionInfo(version: PackageVersionRow): PackageVersionInfo {
     fileCount: version.fileCount,
     totalBytes: version.totalBytes,
     createdAt: version.createdAt,
-    items: structure.items.map(({ id, title, depth, launchable, sco }) => ({ id, title, depth, launchable, sco })),
+    // SCORM 2004 items with isvisible="false" stay in the activity tree but not in the table of contents.
+    items: structure.items
+      .filter((i) => i.visible !== false)
+      .map(({ id, title, depth, launchable, sco }) => ({ id, title, depth, launchable, sco })),
+    ...(structure.warnings?.length ? { warnings: structure.warnings } : {}),
   };
 }
 
@@ -166,6 +184,9 @@ export async function importPackage(
   zip: Uint8Array,
   fileName: string,
 ): Promise<PackageVersionRow> {
+  // cmi5: a cmi5.xml uploaded on its own (every AU hosted elsewhere) imports as a zip holding just that file.
+  const cmi5Xml = standaloneCmi5(zip);
+  if (cmi5Xml) zip = cmi5Xml;
   const entries = readZipEntries(zip, { maxFiles: DEFAULT_MAX_FILES, maxBytes: deps.config.maxPackageBytes }).filter(
     (e) => !isArchiveMetadata(e.name),
   );
@@ -173,12 +194,7 @@ export async function importPackage(
   const { root, marker } = packageRoot(entries.map((e) => e.name));
   if (!marker) {
     throw new PackageError(
-      "This zip doesn't look like a SCORM or xAPI package: it needs an imsmanifest.xml or tincan.xml file at the top level.",
-    );
-  }
-  if (marker === 'cmi5.xml' && !entries.some((e) => e.name.toLowerCase() === `${root}imsmanifest.xml`)) {
-    throw new PackageError(
-      'This is a cmi5 package. Coursekit plays SCORM 1.2, SCORM 2004 and xAPI (tincan.xml) packages, but not cmi5 yet.',
+      "This zip doesn't look like a SCORM, xAPI or cmi5 package: it needs an imsmanifest.xml or tincan.xml file (or a cmi5.xml) at the top level.",
     );
   }
   const files = entries
@@ -198,7 +214,10 @@ export async function importPackage(
   const manifest = read('imsmanifest.xml');
   let structure: PackageStructure;
   if (manifest !== null) structure = parseScormManifest(manifest, hasFile);
-  else structure = parseTincan(read('tincan.xml') ?? '', hasFile);
+  else if (marker === 'cmi5.xml') {
+    const ownOrigin = deps.config.publicUrl ? new URL(deps.config.publicUrl).origin : null;
+    structure = parseCmi5(read('cmi5.xml') ?? '', { hasFile, standalone: !!cmi5Xml, ownOrigin });
+  } else structure = parseTincan(read('tincan.xml') ?? '', hasFile);
   // Launch paths must match stored file names exactly.
   for (const item of structure.items) {
     if (item.path && !byPath.has(item.path)) {
@@ -365,6 +384,8 @@ export async function refreshAttempt(deps: Deps, attemptId: string, options: { s
   const attempt = await db.selectFrom('packageAttempts').selectAll().where('id', '=', attemptId).executeTakeFirst();
   if (!attempt) return;
   const version = await db.selectFrom('packageVersions').selectAll().where('id', '=', attempt.versionId).executeTakeFirstOrThrow();
+  // SCORM 2004: the result is the root activity's rolled-up status (sequencing/service.ts).
+  if (version.kind === 'scorm2004') return refreshSequencedAttempt(deps, attempt, version);
   const structure = structureOf(version);
   const items = structure.items.filter((i) => i.launchable);
 
@@ -374,7 +395,10 @@ export async function refreshAttempt(deps: Deps, attemptId: string, options: { s
   let seconds = 0;
   let finished = false;
 
-  if (version.kind === 'xapi') {
+  if (version.kind === 'cmi5') {
+    const course = cmi5Of(structure);
+    if (course) ({ completion, success, score, seconds, finished } = await cmi5AttemptResult(db, attempt.id, course));
+  } else if (version.kind === 'xapi') {
     const statements = await db
       .selectFrom('xapiStatements')
       .select(['verbId', 'objectId', 'statement'])
@@ -524,11 +548,12 @@ export async function toAttemptInfos(db: DB, attempts: PackageAttemptRow[]): Pro
       .execute(),
     db
       .selectFrom('packageVersions')
-      .select(['id', 'version'])
+      .select(['id', 'version', 'kind'])
       .where('id', 'in', [...new Set(attempts.map((a) => a.versionId))])
       .execute(),
   ]);
   const versionNumber = new Map(versions.map((v) => [v.id, v.version]));
+  const versionKind = new Map(versions.map((v) => [v.id, v.kind]));
   return attempts.map((a) => {
     const items: Record<string, PackageItemProgress> = {};
     for (const r of rows) {
@@ -551,6 +576,8 @@ export async function toAttemptInfos(db: DB, attempts: PackageAttemptRow[]): Pro
       lastAccessedAt: a.lastAccessedAt,
       finishedAt: a.finishedAt,
       version: versionNumber.get(a.versionId) ?? 0,
+      // The version can't be gone: deleting it deletes its attempts.
+      kind: versionKind.get(a.versionId)!,
       items,
     };
   });
@@ -605,18 +632,32 @@ export function xapiActor(user: Pick<UserRow, 'id' | 'name'>, homePage: string) 
   return { objectType: 'Agent' as const, name: user.name, account: { homePage, name: user.id } };
 }
 
-export async function launch(deps: Deps, access: ActivityAccess, input: PackageLaunchInput, origin: string): Promise<PackageLaunch> {
+/**
+ * Launches the package for the viewer. With `kind` (POST /cmi5/launch), a launch of a version of another kind is
+ * 409, before any attempt starts: the page asking was open while the teacher replaced the package.
+ */
+export async function launch(
+  deps: Deps,
+  access: ActivityAccess,
+  input: PackageLaunchInput,
+  origin: string,
+  options: { kind?: PackageKind } = {},
+): Promise<PackageLaunch> {
   const { db } = deps;
   const { activity, user } = access;
   const settings = parseSettings('package', activity.settings);
   const current = await currentVersion(db, activity.id);
   if (!current) throw badRequest('No package has been uploaded to this activity yet.');
+  const expectKind = (v: PackageVersionRow) => {
+    if (options.kind && v.kind !== options.kind) throw conflict("This activity's package has changed. Reload the page to open it.");
+  };
 
   let purpose: TokenPurpose;
   let attempt: PackageAttemptRow | null = null;
   let version = current;
   if (!isLearner(access)) {
     purpose = 'preview';
+    expectKind(current);
   } else {
     const attempts = await attemptsOf(db, activity.id, user.id);
     if (input.attemptId) {
@@ -635,6 +676,7 @@ export async function launch(deps: Deps, access: ActivityAccess, input: PackageL
               : "You've used all your attempts at this activity.",
         );
       }
+      expectKind(current);
       const ts = now();
       attempt = {
         id: newId(),
@@ -662,10 +704,22 @@ export async function launch(deps: Deps, access: ActivityAccess, input: PackageL
     if (attempt.versionId !== current.id) {
       version = await db.selectFrom('packageVersions').selectAll().where('id', '=', attempt.versionId).executeTakeFirstOrThrow();
     }
+    expectKind(version);
+    // SCORM 2004 attempts follow the package's sequencing rules (sequencing/service.ts).
+    if (version.kind === 'scorm2004') {
+      const sequencing = { activityId: activity.id, userId: user.id, settings, version, attempt };
+      if (purpose === 'play') return sequencedLaunch(deps, sequencing, input);
+      // The sequenced player asking after its attempt finished (its content ended it while the player
+      // was open): it gets the attempt's summary, not a review.
+      if (input.nav !== undefined && attempt.status === 'finished') return sequencedSummary(deps, sequencing);
+    }
   }
 
+  if (version.kind === 'cmi5') return launchCmi5(deps, access, { attempt, purpose, version, input, origin });
   const structure = structureOf(version);
+  // Items hidden from the table of contents (SCORM 2004 isvisible="false") only open when asked for.
   const launchable = structure.items.filter((i) => i.launchable);
+  const listed = launchable.filter((i) => i.visible !== false);
   let item: StructureItem | undefined;
   if (input.itemId) {
     item = launchable.find((i) => i.id === input.itemId);
@@ -676,7 +730,10 @@ export async function launch(deps: Deps, access: ActivityAccess, input: PackageL
       : [];
     const done = new Set(states.filter((s) => s.completionStatus === 'completed').map((s) => s.itemId));
     item =
-      launchable.find((i) => i.id === attempt?.lastItemId && !done.has(i.id)) ?? launchable.find((i) => !done.has(i.id)) ?? launchable[0];
+      listed.find((i) => i.id === attempt?.lastItemId && !done.has(i.id)) ??
+      listed.find((i) => !done.has(i.id)) ??
+      listed[0] ??
+      launchable[0];
   }
   if (!item?.href) throw badRequest('This package has nothing to launch.');
 
@@ -745,7 +802,7 @@ function learnerName12(name: string): string {
   return `${last}, ${parts.join(' ')}`.slice(0, 255);
 }
 
-interface RuntimeContext {
+export interface RuntimeContext {
   token: PackageToken;
   version: PackageVersionRow;
   structure: PackageStructure;
@@ -768,7 +825,12 @@ export async function loadRuntimeContext(db: DB, token: PackageToken): Promise<R
   return { token, version, structure, item, attempt };
 }
 
-function lmsValues(ctx: RuntimeContext, user: Pick<UserRow, 'id' | 'name'>, row: PackageScoStateRow | undefined): Record<string, string> {
+function lmsValues(
+  ctx: RuntimeContext,
+  user: Pick<UserRow, 'id' | 'name'>,
+  row: PackageScoStateRow | undefined,
+  seqRt?: SequencedRuntime | null,
+): Record<string, string> {
   const { item, token } = ctx;
   const mode = token.p === 'play' ? 'normal' : token.p === 'review' ? 'review' : 'browse';
   const credit = token.p === 'play' ? 'credit' : 'no-credit';
@@ -798,6 +860,8 @@ function lmsValues(ctx: RuntimeContext, user: Pick<UserRow, 'id' | 'name'>, row:
     'cmi.total_time': formatDuration(total, '2004'),
     'cmi.time_limit_action': item.timeLimitAction ?? 'continue,no message',
     ...lmsThresholds(item),
+    // SCORM 2004 deliveries: entry, total time (of the current attempt on the activity) and credit.
+    ...(seqRt ? seqRt.lms(row) : {}),
   };
   if (item.dataFromLms !== null) out['cmi.launch_data'] = item.dataFromLms;
   if (item.maxTimeAllowed) out['cmi.max_time_allowed'] = item.maxTimeAllowed;
@@ -809,8 +873,26 @@ function navOf(ctx: RuntimeContext) {
   return { items, index: items.indexOf(ctx.item.id) };
 }
 
-/** What the browser run-time starts from: the stored data of this SCO plus Coursekit's read-only values. */
-export async function runtimeBoot(db: DB, ctx: RuntimeContext, tokenString: string, origin: string): Promise<RuntimeBoot> {
+/** Whether a play token opens a sequenced SCORM 2004 delivery. */
+const sequenced = (ctx: RuntimeContext) => ctx.version.kind === 'scorm2004' && ctx.token.p === 'play' && !!ctx.attempt;
+/** SCORM 2004: the edition decides the run-time's vocabulary (jump navigation requests are 4th edition only). */
+const editionOf = (ctx: RuntimeContext): Pick<ModelInit, 'edition'> =>
+  ctx.version.kind === 'scorm2004' ? { edition: ctx.version.edition } : {};
+const MOVED_ON = 'This part has moved on: progress here is no longer saved.';
+
+/**
+ * What the browser run-time starts from: the stored data of this SCO plus Coursekit's read-only values.
+ * Returns null for a SCORM 2004 delivery that is no longer the current one (the learner moved on).
+ */
+export async function runtimeBoot(
+  deps: Pick<AppDeps, 'db' | 'storage'>,
+  ctx: RuntimeContext,
+  tokenString: string,
+  origin: string,
+): Promise<RuntimeBoot | null> {
+  const { db } = deps;
+  const seqRt = sequenced(ctx) ? await sequencedRuntime(deps, ctx) : null;
+  if (sequenced(ctx) && !seqRt?.current) return null;
   const user = await db.selectFrom('users').select(['id', 'name']).where('id', '=', ctx.token.u).executeTakeFirst();
   const row =
     ctx.attempt && ctx.version.kind !== 'xapi'
@@ -822,16 +904,19 @@ export async function runtimeBoot(db: DB, ctx: RuntimeContext, tokenString: stri
           .executeTakeFirst()
       : undefined;
   const data = storedData(row);
+  const boot = seqRt ? sequencedBoot(seqRt, data.values) : null;
   return {
     version: ctx.version.kind === 'xapi' ? 'xapi' : scormVersion(ctx.version.kind),
     commitUrl: `${CONTENT_PREFIX}${tokenString}/__coursekit/commit`,
     sid: randomToken(12),
     item: ctx.item.id,
     origin,
-    values: data.values,
+    values: boot?.values ?? data.values,
     counts: data.counts,
-    lms: user ? lmsValues(ctx, user, row) : {},
-    nav: navOf(ctx),
+    lms: user ? lmsValues(ctx, user, row, seqRt) : {},
+    nav: boot?.nav ?? navOf(ctx),
+    ...(seqRt ? { data: seqRt.data } : {}),
+    ...editionOf(ctx),
     maxBytes: MAX_SCO_STATE_BYTES,
   };
 }
@@ -843,6 +928,10 @@ export interface CommitBody {
   terminate: boolean;
   /** Seconds since Initialize, used when the SCO reports no session time. */
   elapsed: number;
+  /** The session ended because the page went away (SCORM 2004: the SCO's navigation isn't implied). */
+  unload: boolean;
+  /** The player is about to navigate for the learner (SCORM 2004: the SCO's navigation request is ignored). */
+  lms: boolean;
 }
 
 export function parseCommitBody(text: string): CommitBody | null {
@@ -863,7 +952,7 @@ export function parseCommitBody(text: string): CommitBody | null {
     ops.push([op[0], op[1]]);
   }
   const elapsed = typeof d.elapsed === 'number' && Number.isFinite(d.elapsed) ? Math.min(Math.max(0, d.elapsed), 12 * 3600) : 0;
-  return { sid: d.sid, seq: d.seq, ops, terminate: d.terminate === true, elapsed };
+  return { sid: d.sid, seq: d.seq, ops, terminate: d.terminate === true, elapsed, unload: d.unload === true, lms: d.lms === true };
 }
 
 /** Applies a commit from the run-time after validating every element again. */
@@ -883,6 +972,10 @@ export async function applyCommit(deps: Deps, ctx: RuntimeContext, body: CommitB
   if (!user || user.status !== 'active' || !enrolment) throw forbidden('You are no longer enrolled in this course.');
   const course = await db.selectFrom('courses').select('visibility').where('id', '=', attempt.courseId).executeTakeFirst();
   if (course?.visibility === 'archived') return { recorded: false, rejected: 0 };
+  // SCORM 2004: only the latest delivery of this part records. A page of an earlier one is told so
+  // (403): its run-time then reports a commit failure (391) to the SCO instead of pretending to save.
+  const seqRt = sequenced(ctx) ? await sequencedRuntime(deps, ctx) : null;
+  if (sequenced(ctx) && !seqRt) throw forbidden(MOVED_ON);
 
   for (let tries = 0; tries < 3; tries++) {
     const row = await db
@@ -897,18 +990,34 @@ export async function applyCommit(deps: Deps, ctx: RuntimeContext, body: CommitB
     // after the run-time's own pagehide ending, with its final score, exit and session time.
     if (attempt.status !== 'in_progress' && row.terminatedSessionId !== body.sid) return { recorded: false, rejected: 0 };
     if (row.sessionId === body.sid && body.seq <= row.seq) return { recorded: false, rejected: 0 };
+    // Once the learner has moved on from a delivery, only its page sessions that already recorded may finish.
+    if (seqRt && !seqRt.current && row.sessionId !== body.sid && row.terminatedSessionId !== body.sid) throw forbidden(MOVED_ON);
     const sv = scormVersion(version.kind);
     const stored = storedData(row);
-    const model = createModel(sv, {
+    const init: ModelInit = {
       values: stored.values,
       counts: stored.counts,
-      lms: lmsValues(ctx, user, row),
+      lms: lmsValues(ctx, user, row, seqRt),
       nav: navOf(ctx),
       maxBytes: MAX_SCO_STATE_BYTES,
-    });
+      ...editionOf(ctx),
+    };
+    if (seqRt) init.data = seqRt.data;
+    const model = createModel(sv, init);
     let rejected = 0;
     for (const [element, value] of body.ops) if (model.set(element, value)) rejected++;
+    const report = seqRt ? runtimeReport(model) : null;
     const values = { ...model.values };
+    // Shared data stores (adl.data) live in the sequencing state, not in this SCO's data.
+    const shared = new Map<string, string>();
+    for (const key of Object.keys(values)) {
+      const m = /^adl\.data\.(\d+)\.store$/.exec(key);
+      if (!m) continue;
+      const target = seqRt?.data[Number(m[1])];
+      if (target) shared.set(target.id, values[key]!);
+      delete values[key];
+    }
+    const navRequest = values['adl.nav.request'] ?? '_none_';
     const exitKey = sv === '1.2' ? 'cmi.core.exit' : 'cmi.exit';
     const timeKey = sv === '1.2' ? 'cmi.core.session_time' : 'cmi.session_time';
     // A session ends with Finish/Terminate, or when the page goes away (pagehide). Content that calls
@@ -925,6 +1034,8 @@ export async function applyCommit(deps: Deps, ctx: RuntimeContext, body: CommitB
       lastExit = values[exitKey] ?? '';
       delete values[timeKey];
       delete values[exitKey];
+      // A navigation request is for this session only (the next one starts with _none_).
+      delete values['adl.nav.request'];
       // SCORM 1.2 (RTE 3.4.4): a SCO that ends its session without setting a status is completed.
       if (sv === '1.2' && (values['cmi.core.lesson_status'] ?? 'not attempted') === 'not attempted') {
         values['cmi.core.lesson_status'] = 'completed';
@@ -965,7 +1076,17 @@ export async function applyCommit(deps: Deps, ctx: RuntimeContext, body: CommitB
       .where((eb) => (row.sessionId === null ? eb('sessionId', 'is', null) : eb('sessionId', '=', row.sessionId)))
       .executeTakeFirst();
     if (Number(updated.numUpdatedRows) === 0) continue; // a concurrent commit won; re-read
-    await refreshAttempt(deps, attempt.id, { sessionEnded: ending });
+    if (seqRt && report) {
+      await sequencedCommit(deps, ctx, seqRt, {
+        report,
+        ending,
+        unload: body.unload,
+        lms: body.lms,
+        navRequest,
+        exit: ending ? (lastExit ?? '') : '',
+        data: shared,
+      });
+    } else await refreshAttempt(deps, attempt.id, { sessionEnded: ending });
     return { recorded: true, rejected };
   }
   return { recorded: false, rejected: 0 };

@@ -117,6 +117,7 @@ export const router = createBrowserRouter([
           { path: 'badges', element: page(() => import('./pages/admin/AdminBadgesPage')) },
           { path: 'external-tools', element: page(() => import('./pages/admin/AdminLtiPage'), 'AdminLtiToolsPage') },
           { path: 'external-tools/:toolId', element: page(() => import('./pages/admin/AdminLtiPage'), 'AdminLtiToolPage') },
+          { path: 'live-classes', element: page(() => import('./pages/admin/AdminLiveClassesPage')) },
         ],
       },
       { path: '*', element: page(() => import('./pages/NotFoundPage')) },

@@ -2,13 +2,14 @@
  * Data shapes returned by the Coursekit REST API. Shared by the server and the web UI.
  */
 import type { CourseCapability } from './permissions.js';
+import type { LiveSettings } from './live.js';
 
 export type SiteRole = 'admin' | 'instructor' | 'student';
 export type CourseRole = 'teacher' | 'assistant' | 'student';
 export type UserStatus = 'active' | 'suspended';
 export type CourseVisibility = 'draft' | 'published' | 'archived';
 export type EnrolmentMethod = 'open' | 'key' | 'invite';
-export type ActivityType = 'lesson' | 'resource' | 'assignment' | 'quiz' | 'forum' | 'lti' | 'package';
+export type ActivityType = 'lesson' | 'resource' | 'assignment' | 'quiz' | 'forum' | 'lti' | 'package' | 'live';
 export type CompletionMode = 'none' | 'manual' | 'auto';
 /** Moodle-style group mode: no groups, separate groups (people only see their own groups) or visible groups. */
 export type GroupMode = 'none' | 'separate' | 'visible';
@@ -191,6 +192,8 @@ export interface ActivitySettingsMap {
   forum: ForumSettings;
   lti: LtiSettings;
   package: PackageSettings;
+  /** Live class (0.4.0): see shared/live.ts. */
+  live: LiveSettings;
 }
 
 export interface ActivityNavItem {
@@ -538,8 +541,11 @@ export interface TimelineItem {
   title: string;
   type: ActivityType;
   course: CourseRef;
+  /** For a live class (type `live`): when its next session starts. */
   dueAt: string;
   status: 'todo' | 'overdue' | 'submitted' | 'graded' | 'done';
+  /** Live class: when that session ends. */
+  endsAt?: string | null;
 }
 
 export interface DashboardData {
@@ -568,13 +574,15 @@ export interface DashboardData {
 export interface CalendarEvent {
   id: string;
   title: string;
-  kind: 'due' | 'course' | 'personal' | 'course-start' | 'course-end';
+  kind: 'due' | 'course' | 'personal' | 'course-start' | 'course-end' | 'live';
   startsAt: string;
   endsAt: string | null;
   description: string | null;
   course: CourseRef | null;
   link: string | null;
   canDelete: boolean;
+  /** Live class sessions: an .ics file to add the session to another calendar. */
+  icsUrl?: string | null;
 }
 
 export interface AppNotification {

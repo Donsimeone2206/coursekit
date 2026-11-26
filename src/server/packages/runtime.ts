@@ -17,8 +17,19 @@ export interface ModelInit {
   counts?: Record<string, number>;
   /** Read-only values Coursekit supplies (learner id and name, entry, credit, mode, total time...). */
   lms?: Record<string, string>;
-  /** Launchable item ids and the index of this one, for adl.nav.request_valid. */
-  nav?: { items: string[]; index: number };
+  /**
+   * Launchable item ids and the index of this one, for adl.nav.request_valid. `valid` (SCORM 2004
+   * sequencing) holds what the server worked out instead; null means unknown.
+   */
+  nav?: {
+    items: string[];
+    index: number;
+    valid?: { continue: boolean | null; previous: boolean | null; choice: Record<string, boolean>; jump: Record<string, boolean> };
+  };
+  /** SCORM 2004 4th edition shared data (adl.data): each store the activity maps, its permissions and value. */
+  data?: Array<{ id: string; read: boolean; write: boolean; value?: string }>;
+  /** SCORM 2004 edition ('2nd', '3rd' or '4th'). Before the 4th, adl.nav.request has no jump. */
+  edition?: string | null;
   /** Most bytes the stored values may take. */
   maxBytes?: number;
 }

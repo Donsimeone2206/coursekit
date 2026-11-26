@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { toast } from 'sonner';
 import { ACTIVITY_DESCRIPTIONS, ACTIVITY_TYPES, DEFAULT_COMPLETION, DEFAULT_SETTINGS } from '@shared/constants';
+import type { LiveSettings } from '@shared/live';
 import type {
   ActivityDetail,
   ActivitySettingsMap,
@@ -23,6 +24,7 @@ import type {
 import { FileChip, FileDrop } from '@/components/common';
 import { ActivityIcon } from '@/components/course';
 import { LtiFields } from '@/components/lti';
+import { LiveFields } from '@/components/live/LiveFields';
 import { ActivityGroupFields } from '@/components/group-modes';
 import { MarkdownEditor } from '@/components/markdown';
 import { Button } from '@/components/ui/button';
@@ -42,6 +44,7 @@ const COMPLETION_LABELS: Record<ActivityType, string> = {
   forum: 'When the student posts',
   lti: 'When the tool reports it done (or when opened, if ungraded)',
   package: 'When every part is completed (and passed, if required)',
+  live: 'When the student attends enough sessions',
 };
 
 interface FormState {
@@ -364,6 +367,17 @@ function SettingsFields({ form, setForm, course }: { form: FormState; setForm: (
         </>
       );
     }
+    case 'live':
+      return (
+        <LiveFields
+          course={course}
+          settings={form.settings as LiveSettings}
+          onSettings={(patch) => setSettings(patch)}
+          completion={form.completion}
+          groupMode={form.groupMode ?? course.groupMode ?? 'none'}
+          groupIds={form.groupIds}
+        />
+      );
     case 'forum': {
       const s = form.settings as ForumSettings;
       return (
@@ -454,6 +468,9 @@ export function ActivityEditor({
         navigate(`${activityPath(course.slug, result.id)}/questions`);
       } else if (!editing && result && form?.type === 'package') {
         toast.success('Activity added. Now upload your package.');
+        navigate(activityPath(course.slug, result.id));
+      } else if (!editing && result && form?.type === 'live') {
+        toast.success('Live class added. Now schedule its sessions.');
         navigate(activityPath(course.slug, result.id));
       } else {
         toast.success(editing ? 'Changes saved' : `${ACTIVITY_META[form!.type].label} added`);

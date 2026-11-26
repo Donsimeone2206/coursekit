@@ -24,6 +24,8 @@ export interface PackageToken {
   t: string;
   /** Item id. */
   i: string;
+  /** SCORM 2004: the delivery of the item this token opens (sequencing state), so older deliveries can't record. */
+  n?: number;
   /** Expiry, seconds since the epoch. */
   x: number;
 }
@@ -90,5 +92,6 @@ export function verifyToken(secret: string, token: string, graceSeconds = 0): Pa
   if (!payload || typeof payload.x !== 'number' || (payload.x + graceSeconds) * 1000 < Date.now()) return null;
   if (!['play', 'review', 'preview', 'xapi'].includes(payload.p)) return null;
   for (const key of ['a', 'v', 'u', 't', 'i'] as const) if (typeof payload[key] !== 'string') return null;
+  if (payload.n !== undefined && !Number.isInteger(payload.n)) return null;
   return payload;
 }

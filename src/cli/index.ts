@@ -123,6 +123,8 @@ async function main() {
           'DATABASE_URL=sqlite://./data/coursekit.db',
           'COURSEKIT_DATA_DIR=./data',
           '# COURSEKIT_PUBLIC_URL=https://learn.example.com',
+          '# Behind a reverse proxy on this machine (for the client address in rate limits):',
+          '# COURSEKIT_TRUST_PROXY=loopback',
           '# Email: an SMTP server (npm install nodemailer), or COURSEKIT_MAIL_TRANSPORT=log to print emails instead',
           '# COURSEKIT_SMTP_URL=smtp://user:password@smtp.example.com:587',
           '# COURSEKIT_MAIL_FROM=Coursekit <no-reply@example.com>',

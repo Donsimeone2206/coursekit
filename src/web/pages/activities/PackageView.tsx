@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, ArrowRight, CircleCheck, Clock, Eye, ListTree, Package, Play, RotateCcw, Upload, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, CircleCheck, Clock, Eye, ListTree, Package, Play, RotateCcw, TriangleAlert, Upload, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import {
@@ -22,7 +22,10 @@ import { EmptyState, Skeleton } from '@/components/ui/misc';
 import { api, errorMessage } from '@/lib/api';
 import { cn, formatBytes, formatDate, formatRelative, plural } from '@/lib/utils';
 import { useInvalidateCourse } from '../course/context';
+import { Cmi5View } from './Cmi5View';
 import { ActivityFrame } from './frame';
+import { packageViewKind } from './package-view';
+import { SequencedPlayer } from './SequencedPlayer';
 
 /** The sandbox for package content: scripts run, but never with Coursekit's origin (no allow-same-origin). */
 const SANDBOX = 'allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads';
@@ -179,7 +182,8 @@ function LearnerSummary({
 }) {
   const latest = info.attempts[info.attempts.length - 1];
   const limit = info.settings.attemptsAllowed;
-  const finished = [...info.attempts].reverse().find((a) => a.status === 'finished');
+  // cmi5 attempts (of a course the package replaced) open in Cmi5View, AU by AU.
+  const finished = [...info.attempts].reverse().find((a) => a.status === 'finished' && a.kind !== 'cmi5');
   return (
     <Card>
       <CardContent className="flex flex-col gap-5 pt-5 sm:flex-row sm:items-center">
@@ -272,6 +276,7 @@ function ManagePackage({
     mutationFn: (fileId: string) => api.post<PackageVersionInfo>(`/packages/${activity.id}/import`, { fileId }),
     onSuccess: async (v) => {
       toast.success(`${kindLabel(v)} package uploaded (version ${v.version}).`);
+      if (v.warnings?.length) toast.warning(`Some of its rules were ignored: ${plural(v.warnings.length, 'note')} below.`);
       await Promise.all([qc.invalidateQueries({ queryKey: ['package', activity.id] }), invalidate(activity.course.slug)]);
     },
     onError: (err) => toast.error(errorMessage(err)),
@@ -285,7 +290,7 @@ function ManagePackage({
         description={
           v
             ? 'Learners who already started keep the version they started with.'
-            : 'Upload a SCORM 1.2, SCORM 2004 or xAPI (tincan.xml) zip.'
+            : 'Upload a SCORM 1.2, SCORM 2004, xAPI (tincan.xml) or cmi5 zip, or a cmi5.xml for AUs hosted elsewhere.'
         }
         action={
           v && (
@@ -320,6 +325,19 @@ function ManagePackage({
             </div>
           </dl>
         )}
+        {v?.warnings && v.warnings.length > 0 && (
+          <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm">
+            <p className="flex items-center gap-2 font-medium">
+              <TriangleAlert className="size-4 text-amber-600" /> Some of the package's rules were ignored
+            </p>
+            <ul className="mt-1.5 list-disc space-y-0.5 pl-5 text-muted-foreground">
+              {v.warnings.slice(0, 5).map((w) => (
+                <li key={w}>{w}</li>
+              ))}
+            </ul>
+            {v.warnings.length > 5 && <p className="mt-1 text-muted-foreground">And {v.warnings.length - 5} more.</p>}
+          </div>
+        )}
         {importZip.isPending ? (
           <div className="flex items-center gap-2 rounded-xl border-2 border-dashed px-4 py-6 text-sm text-muted-foreground">
             <Upload className="size-4" /> Checking and unpacking the package…
@@ -328,7 +346,7 @@ function ManagePackage({
           <FileDrop
             context="activity"
             courseId={activity.courseId}
-            accept=".zip,application/zip"
+            accept=".zip,.xml,application/zip,application/xml,text/xml"
             label={v ? 'Drop a new zip here to replace the package' : 'Drop the package zip here or click to upload'}
             onUploaded={(file) => importZip.mutate(file.id)}
           />
@@ -426,10 +444,14 @@ export function PackageView({ activity }: { activity: ActivityDetail<'package'> 
   const invalidate = useInvalidateCourse();
   const [player, setPlayer] = useState<PackageLaunch | null>(null);
   const [popup, setPopup] = useState(false);
+  /** SCORM 2004 in a window: the window the content plays in (the page keeps the controls). */
+  const [popupWin, setPopupWin] = useState<Window | null>(null);
+  /** Cmi5View plays an AU (on the page or in a window): it stays until the AU ends. */
+  const [cmi5Playing, setCmi5Playing] = useState(false);
   const { data: info, isLoading } = useQuery({
     queryKey: ['package', activity.id],
     queryFn: () => api.get<PackagePlayerInfo>(`/packages/${activity.id}`),
-    refetchInterval: player || popup ? 15_000 : false,
+    refetchInterval: player || popup || cmi5Playing ? 15_000 : false,
   });
   const refresh = useCallback(() => {
     void qc.invalidateQueries({ queryKey: ['package', activity.id] });
@@ -448,7 +470,22 @@ export function PackageView({ activity }: { activity: ActivityDetail<'package'> 
       }
     },
     onSuccess: ({ result, win }) => {
-      if (result.display === 'window') {
+      if ('cmi5' in result) {
+        // A cmi5 course (the page was open while the teacher replaced the package): Cmi5View opens it.
+        win?.close();
+        setPopup(false);
+        setPlayer(null);
+        toast.error("This activity's package has changed. Open it again.");
+        refresh();
+        return;
+      }
+      if (result.sequencing) {
+        // SCORM 2004: the player follows the sequencing rules; with display "window" the content opens in `win`.
+        if (result.display === 'window' && !result.url) win?.close();
+        setPopupWin(result.display === 'window' && result.url ? (win ?? null) : null);
+        setPopup(false);
+        setPlayer(result);
+      } else if (result.display === 'window') {
         if (win) win.location.href = result.url;
         else window.open(result.url, '_blank');
         setPopup(true);
@@ -467,11 +504,18 @@ export function PackageView({ activity }: { activity: ActivityDetail<'package'> 
   };
   const close = useCallback(() => {
     setPlayer(null);
+    setPopupWin((win) => {
+      win?.close();
+      return null;
+    });
     // The package saves as it unloads; read the result a moment later.
     setTimeout(refresh, 800);
   }, [refresh]);
   const onLaunch = useCallback((input: PackageLaunchInput) => launch.mutate(input), [launch]);
 
+  if (info && packageViewKind(info, { package: !!player || popup, cmi5: cmi5Playing }) === 'cmi5') {
+    return <Cmi5View activity={activity} info={info} onPlayingChange={setCmi5Playing} onPackageLaunch={start} />;
+  }
   return (
     <ActivityFrame activity={activity}>
       <div className="space-y-6">
@@ -482,6 +526,16 @@ export function PackageView({ activity }: { activity: ActivityDetail<'package'> 
         )}
         {isLoading || !info ? (
           <Skeleton className="h-40" />
+        ) : player?.sequencing ? (
+          <SequencedPlayer
+            key={player.attemptId}
+            activityId={activity.id}
+            launch={player}
+            title={activity.title}
+            popup={popupWin}
+            onClose={close}
+            onProgress={refresh}
+          />
         ) : player ? (
           <Player launch={player} title={activity.title} onLaunch={onLaunch} onClose={close} onProgress={refresh} />
         ) : !info.current ? (

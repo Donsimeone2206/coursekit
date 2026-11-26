@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CalendarDays, ChevronLeft, ChevronRight, ClipboardList, Flag, Plus, Trash2, Video } from 'lucide-react';
+import { CalendarDays, CalendarPlus, ChevronLeft, ChevronRight, ClipboardList, Flag, Plus, Trash2, Video } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router';
 import { toast } from 'sonner';
@@ -55,11 +55,18 @@ function EventDetails({ event, onDeleted }: { event: CalendarEvent; onDeleted: (
         {event.endsAt && ` – ${formatTime(event.endsAt)}`}
       </p>
       {event.course && <p className="text-xs text-muted-foreground">{event.course.title}</p>}
-      {event.description && <p className="text-sm">{event.description}</p>}
+      {event.description && <p className="text-sm break-words">{event.description}</p>}
       <div className="flex gap-2 pt-1">
         {event.link && (
           <Button asChild size="xs" variant="outline">
             <Link to={event.link}>Open</Link>
+          </Button>
+        )}
+        {event.icsUrl && (
+          <Button asChild size="xs" variant="ghost">
+            <a href={event.icsUrl} download>
+              <CalendarPlus /> Add to calendar
+            </a>
           </Button>
         )}
         {event.canDelete && (
@@ -209,7 +216,7 @@ export default function CalendarPage() {
     <Page size="wide">
       <PageHeader
         title="Calendar"
-        description="Due dates, course events and your own reminders in one place."
+        description="Due dates, live classes, course events and your own reminders in one place."
         actions={
           <Button onClick={() => setCreating(new Date())}>
             <Plus /> New event

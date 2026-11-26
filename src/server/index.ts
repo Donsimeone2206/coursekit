@@ -26,6 +26,7 @@ import { packageVersion } from './paths.js';
 import { seedDemo, type SeedDemoOptions, type SeedDemoResult } from './seed/demo.js';
 import { createEmailService, type CoursekitEmail } from './services/email/service.js';
 import { startCompletionEngine } from './services/completion.js';
+import { startLiveWorker } from './services/live/worker.js';
 import { toUser } from './services/serialize.js';
 import { createUser, type CreateUserInput } from './services/users.js';
 
@@ -70,6 +71,8 @@ export async function createCoursekit(options: CreateCoursekitOptions = {}): Pro
   const email = createEmailService(deps);
   const app = createApp(deps);
   const completion = startCompletionEngine(deps);
+  // Live class reminders and provider meetings, on a small unref'd timer.
+  const live = startLiveWorker(deps);
   const servers: Server[] = [];
 
   return {
@@ -100,6 +103,7 @@ export async function createCoursekit(options: CreateCoursekitOptions = {}): Pro
     email,
     async close() {
       await Promise.all(servers.map((s) => new Promise<void>((resolve) => s.close(() => resolve()))));
+      await live.stop(); // may still send reminders
       await completion.stop(); // may still queue notification emails
       await email.close();
       await db.destroy();
@@ -124,4 +128,7 @@ export type * from '../shared/types.js';
 export type * from '../shared/completion.js';
 export type * from '../shared/open-badges.js';
 export type * from '../shared/lti.js';
+export type * from '../shared/lti-registration.js';
+export type { TrustProxyOption, TrustProxySetting } from './lib/client-address.js';
+export type * from '../shared/live.js';
 export { COURSE_CAPABILITIES, ROLE_CAPABILITIES, getCourseCapabilities, type CourseCapability } from '../shared/permissions.js';

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowLeft, Check, Copy, Plus, Power, PowerOff, Puzzle, TriangleAlert } from 'lucide-react';
+import { ArrowLeft, Check, Copy, Plus, Power, PowerOff, Puzzle, TriangleAlert, Wand2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { toast } from 'sonner';
@@ -10,6 +10,15 @@ import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { useConfirm } from '@/components/ui/confirm';
 import { ChoiceCards, Field, Input, SwitchField, Textarea } from '@/components/ui/form';
 import { EmptyState, ErrorState, Skeleton } from '@/components/ui/misc';
+import {
+  isClassListScope,
+  isGradeScope,
+  RegisterToolDialog,
+  registeredServiceHint,
+  ToolRegistrationCard,
+  useRegisteredTools,
+  useToolRegistration,
+} from '@/components/lti-registration';
 import { ApiError, api, errorMessage } from '@/lib/api';
 import { useTitle } from '@/lib/hooks';
 import { plural } from '@/lib/utils';
@@ -101,6 +110,8 @@ export function AdminLtiToolsPage() {
     queryKey: ['admin', 'lti-tools'],
     queryFn: () => api.get<LtiToolList>('/admin/lti/tools'),
   });
+  const registered = new Set((useRegisteredTools().data ?? []).map((r) => r.toolId));
+  const [registering, setRegistering] = useState(false);
 
   if (isLoading) return <Skeleton className="h-64" />;
   if (error || !data) return <ErrorState error={error} onRetry={() => refetch()} />;
@@ -113,15 +124,21 @@ export function AdminLtiToolsPage() {
           Learning tools from other sites that teachers can add to their courses (LTI 1.3). Coursekit signs people in to the tool and can
           take grades back.
         </p>
-        <Button onClick={() => navigate('/admin/external-tools/new')}>
-          <Plus /> Add a tool
-        </Button>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Button variant="outline" disabled={!data.platform.configured} onClick={() => setRegistering(true)}>
+            <Wand2 /> Register with a URL
+          </Button>
+          <Button onClick={() => navigate('/admin/external-tools/new')}>
+            <Plus /> Add a tool
+          </Button>
+        </div>
       </div>
+      <RegisterToolDialog open={registering} onOpenChange={setRegistering} />
       {data.tools.length === 0 ? (
         <EmptyState
           icon={Puzzle}
           title="No external tools yet"
-          description="Register a tool with the details its provider gives you, then teachers can add it as an activity."
+          description="Register a tool with the details its provider gives you, or with its registration URL if it supports Dynamic Registration. Then teachers can add it as an activity."
         />
       ) : (
         <div className="grid gap-3">
@@ -138,6 +155,7 @@ export function AdminLtiToolsPage() {
                 <span className="flex flex-wrap items-center gap-2">
                   <span className="font-medium">{t.name}</span>
                   {t.status === 'disabled' && <Badge variant="warning">Turned off</Badge>}
+                  {registered.has(t.id) && <Badge variant="outline">Registered automatically</Badge>}
                   {t.allowAgs && <Badge variant="info">Grades</Badge>}
                   {t.allowNrps && <Badge variant="violet">Class list</Badge>}
                   {t.deepLinkingUrl && <Badge variant="neutral">Content selection</Badge>}
@@ -237,7 +255,20 @@ function toInput(f: FormState): LtiToolInput {
   };
 }
 
-function ToolForm({ tool, onSaved }: { tool?: LtiTool; onSaved: (detail: LtiToolDetail) => void }) {
+function ToolForm({
+  tool,
+  grantedScopes,
+  onSaved,
+}: {
+  tool?: LtiTool;
+  /** For a tool that registered itself: the scopes it asked for, which limit what the switches can give. */
+  grantedScopes?: string[] | null;
+  onSaved: (detail: LtiToolDetail) => void;
+}) {
+  const gradesHint = registeredServiceHint(grantedScopes, 'grades');
+  const classListHint = registeredServiceHint(grantedScopes, 'classList');
+  const noGrades = !!grantedScopes && !grantedScopes.some(isGradeScope);
+  const noClassList = !!grantedScopes && !grantedScopes.some(isClassListScope);
   const [form, setForm] = useState<FormState>(() => (tool ? toForm(tool) : EMPTY));
   useEffect(() => {
     if (tool) setForm(toForm(tool));
@@ -268,7 +299,11 @@ function ToolForm({ tool, onSaved }: { tool?: LtiTool; onSaved: (detail: LtiTool
       <Card>
         <CardHeader
           title={tool ? 'Tool settings' : 'New external tool'}
-          description="Copy these from the tool provider's LTI 1.3 setup page."
+          description={
+            grantedScopes
+              ? 'These came from the tool when it registered itself. Change them here if you need to.'
+              : "Copy these from the tool provider's LTI 1.3 setup page."
+          }
         />
         <CardContent className="space-y-5">
           <div className="grid gap-4 sm:grid-cols-2">
@@ -366,14 +401,16 @@ function ToolForm({ tool, onSaved }: { tool?: LtiTool; onSaved: (detail: LtiTool
             />
             <SwitchField
               label="Grades"
-              description="Assignment and Grade Services: the tool can send scores to the gradebook."
-              checked={form.allowAgs}
+              description={gradesHint ?? 'Assignment and Grade Services: the tool can send scores to the gradebook.'}
+              checked={form.allowAgs && !noGrades}
+              disabled={noGrades}
               onCheckedChange={(v) => set('allowAgs', v)}
             />
             <SwitchField
               label="Class list"
-              description="Names and Role Provisioning Services: the tool can read who is in a course that uses it."
-              checked={form.allowNrps}
+              description={classListHint ?? 'Names and Role Provisioning Services: the tool can read who is in a course that uses it.'}
+              checked={form.allowNrps && !noClassList}
+              disabled={noClassList}
               onCheckedChange={(v) => set('allowNrps', v)}
             />
           </div>
@@ -400,6 +437,7 @@ export function AdminLtiToolPage() {
     enabled: !isNew,
   });
   const list = useQuery({ queryKey: ['admin', 'lti-tools'], queryFn: () => api.get<LtiToolList>('/admin/lti/tools'), enabled: isNew });
+  const registration = useToolRegistration(isNew ? undefined : toolId);
   useTitle(isNew ? 'New external tool' : data?.tool.name);
 
   const refresh = async (detail: LtiToolDetail) => {
@@ -458,9 +496,11 @@ export function AdminLtiToolPage() {
         )}
       </div>
       {platform && !platform.configured && <NotConfigured />}
+      {tool && registration.data && <ToolRegistrationCard registration={registration.data} tool={tool} />}
       {tool && platform && <PlatformDetails platform={platform} tool={tool} />}
       <ToolForm
         tool={tool}
+        grantedScopes={registration.data?.grantedScopes ?? null}
         onSaved={async (detail) => {
           await refresh(detail);
           if (isNew) navigate(`/admin/external-tools/${detail.tool.id}`, { replace: true });

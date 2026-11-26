@@ -16,6 +16,22 @@ import type { ActivityRow } from '../db/schema.js';
 import type { PackageAttemptRow, XapiDocumentRow } from '../db/schema-packages.js';
 import { newId, now, parseJson } from '../lib/util.js';
 import { loadActivityAccess } from '../services/access.js';
+import {
+  afterCmi5Plan,
+  applyCmi5Plan,
+  checkCmi5Statements,
+  cmi5LmsStatementCount,
+  cmi5Lrs,
+  cmi5Rejection,
+  guardCmi5Document,
+  guardCmi5Registration,
+  noteCmi5DocumentRead,
+  previewCmi5Statements,
+  PROTECTED_STATE_ID,
+  type Cmi5Lrs,
+} from './cmi5/lrs.js';
+import { nextStoredTimes } from './cmi5/statements.js';
+import { isCmi5Credential } from './cmi5/tokens.js';
 import { refreshAttempt, xapiActor } from './service.js';
 import { packageSecret, SESSION_GRACE_SECONDS, verifyToken, type PackageToken } from './tokens.js';
 
@@ -28,6 +44,12 @@ const MAX_ATTEMPT_BYTES = 20 * 1024 * 1024;
 const MAX_DOCUMENTS = 1000;
 /** Most bytes (as stored, base64) the state and profile documents of one learner in one activity may take. */
 const MAX_DOCUMENT_BYTES = 20 * 1024 * 1024;
+/**
+ * Longest activityId and stateId or profileId of a document, in UTF-8 bytes. Both are in the documents' unique
+ * index, whose entries PostgreSQL limits to 2704 bytes; counting bytes keeps the limits the same on SQLite.
+ */
+const MAX_DOCUMENT_IRI_BYTES = 2048;
+const MAX_DOCUMENT_ID_BYTES = 500;
 const VOIDED = 'http://adlnet.gov/expapi/verbs/voided';
 const RE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const RE_IRI = /^[a-z][a-z0-9+.-]*:\S+$/i;
@@ -52,6 +74,8 @@ interface Lrs {
   records: boolean;
   homePage: string;
   user: { id: string; name: string };
+  /** Set for cmi5 session credentials: the cmi5 statement and document rules apply (cmi5/lrs.ts). */
+  cmi5?: Cmi5Lrs;
 }
 
 const sha1 = (data: Uint8Array | string) => createHash('sha1').update(data).digest('hex');
@@ -224,6 +248,7 @@ export function xapiRoutes(deps: AppDeps) {
     const decoded = Buffer.from(match[1]!, 'base64').toString('utf8');
     // Recording credentials keep working for a grace period after expiry, so a page left open keeps saving.
     const raw = decoded.slice(decoded.indexOf(':') + 1);
+    if (isCmi5Credential(raw)) return cmi5Lrs(deps, c, raw);
     const secret = await packageSecret(db);
     let token = verifyToken(secret, raw);
     if (!token) {
@@ -257,6 +282,8 @@ export function xapiRoutes(deps: AppDeps) {
         return await fn(c, await auth(c));
       } catch (err) {
         if (err instanceof XapiError) return errorResponse(c, err);
+        const cmi5 = cmi5Rejection(err);
+        if (cmi5) return errorResponse(c, new XapiError(cmi5.status, cmi5.message));
         throw err;
       }
     };
@@ -290,7 +317,10 @@ export function xapiRoutes(deps: AppDeps) {
       ids.add(id);
       return { id, raw };
     });
-    if (!lrs.records) return prepared.map((p) => p.id);
+    if (!lrs.records) {
+      if (lrs.cmi5) await previewCmi5Statements(deps, lrs.cmi5, prepared);
+      return prepared.map((p) => p.id);
+    }
 
     const existing = await db
       .selectFrom('xapiStatements')
@@ -310,20 +340,29 @@ export function xapiRoutes(deps: AppDeps) {
     }
     const fresh = prepared.filter((p) => !existingIds.has(p.id));
     if (!fresh.length) return prepared.map((p) => p.id);
+    const cmi5Plan = lrs.cmi5 ? await checkCmi5Statements(deps, lrs.cmi5, fresh) : null;
     const usage = await db
       .selectFrom('xapiStatements')
       .select((eb) => [eb.fn.countAll().as('n'), eb.fn.sum(eb.fn('length', ['statement'])).as('bytes')])
       .where('attemptId', '=', lrs.attempt!.id)
       .executeTakeFirst();
     const freshBytes = fresh.reduce((sum, p) => sum + JSON.stringify(p.raw).length, 0);
-    if (Number(usage?.n ?? 0) + fresh.length > MAX_STATEMENTS_PER_ATTEMPT || Number(usage?.bytes ?? 0) + freshBytes > MAX_ATTEMPT_BYTES) {
+    // cmi5: Coursekit's own statements (launched, abandoned, satisfied) don't count toward the AU's allowance.
+    const lmsMade = lrs.cmi5 ? await cmi5LmsStatementCount(db, lrs.attempt!.id) : 0;
+    if (
+      Number(usage?.n ?? 0) - lmsMade + fresh.length > MAX_STATEMENTS_PER_ATTEMPT ||
+      Number(usage?.bytes ?? 0) + freshBytes > MAX_ATTEMPT_BYTES
+    ) {
       throw new XapiError(403, 'This attempt has sent too many statements.');
     }
 
-    const stored = now();
+    const storedNow = now();
+    // cmi5 registrations keep their statements in order (one millisecond apart, see cmi5/statements.ts).
+    const cmi5Times = lrs.cmi5 ? await nextStoredTimes(db, lrs.attempt!.id, fresh.length) : null;
     const authority = { objectType: 'Agent', name: 'Coursekit', account: { homePage: lrs.homePage, name: 'coursekit' } };
     const voids: string[] = [];
-    const rows = fresh.map(({ id, raw }) => {
+    const rows = fresh.map(({ id, raw }, i) => {
+      const stored = cmi5Times?.[i] ?? storedNow;
       const object = raw.object as Record<string, unknown>;
       const verbId = (raw.verb as { id: string }).id;
       if (verbId === VOIDED) {
@@ -370,8 +409,11 @@ export function xapiRoutes(deps: AppDeps) {
           .where('verbId', '!=', VOIDED)
           .execute();
       }
+      if (cmi5Plan) await applyCmi5Plan(trx, cmi5Plan);
     });
-    await refreshAttempt(deps, lrs.attempt!.id);
+    // cmi5: "satisfied" statements, and the attempt only when something that counts changed (cmi5/lrs.ts).
+    if (cmi5Plan) await afterCmi5Plan(deps, cmi5Plan);
+    else await refreshAttempt(deps, lrs.attempt!.id);
     return prepared.map((p) => p.id);
   }
 
@@ -407,7 +449,9 @@ export function xapiRoutes(deps: AppDeps) {
           .select(['id', 'statement', 'stored'])
           .where('activityId', '=', lrs.activity.id)
           .where('userId', '=', lrs.user.id)
-          .where('attemptId', 'is not', null);
+          .where('attemptId', 'is not', null)
+          // cmi5 session credentials only read their own registration.
+          .$if(!!lrs.cmi5, (q) => q.where('registration', '=', lrs.cmi5!.session.registration));
       if (q.statementId !== undefined || q.voidedStatementId !== undefined) {
         const allowed = ['statementId', 'voidedStatementId', 'format', 'attachments'];
         if (Object.keys(q).some((k) => !allowed.includes(k)) || (q.statementId !== undefined && q.voidedStatementId !== undefined)) {
@@ -488,9 +532,12 @@ export function xapiRoutes(deps: AppDeps) {
   function stateKey(c: Context, lrs: Lrs): DocKey {
     const activityId = c.req.query('activityId') ?? '';
     if (!RE_IRI.test(activityId)) throw new XapiError(400, 'The activityId parameter must be an IRI.');
+    if (Buffer.byteLength(activityId) > MAX_DOCUMENT_IRI_BYTES)
+      throw new XapiError(400, `The activityId parameter must be at most ${MAX_DOCUMENT_IRI_BYTES} bytes.`);
     parseAgentParam(c.req.query('agent'), lrs);
     const registration = (c.req.query('registration') ?? '').toLowerCase();
     if (registration && !RE_UUID.test(registration)) throw new XapiError(400, 'The registration parameter must be a UUID.');
+    if (lrs.cmi5) guardCmi5Registration(lrs.cmi5, registration);
     return { kind: 'state', ownerId: lrs.user.id, activityIri: activityId, registration };
   }
   /**
@@ -500,6 +547,8 @@ export function xapiRoutes(deps: AppDeps) {
   function activityProfileKey(c: Context, lrs: Lrs): DocKey {
     const activityId = c.req.query('activityId') ?? '';
     if (!RE_IRI.test(activityId)) throw new XapiError(400, 'The activityId parameter must be an IRI.');
+    if (Buffer.byteLength(activityId) > MAX_DOCUMENT_IRI_BYTES)
+      throw new XapiError(400, `The activityId parameter must be at most ${MAX_DOCUMENT_IRI_BYTES} bytes.`);
     return { kind: 'activity_profile', ownerId: lrs.user.id, activityIri: activityId, registration: '' };
   }
   function agentProfileKey(c: Context, lrs: Lrs): DocKey {
@@ -541,6 +590,7 @@ export function xapiRoutes(deps: AppDeps) {
       handle(async (c, lrs) => {
         const key = keyOf(c, lrs);
         const docId = c.req.query(idParam);
+        if (lrs.cmi5) await noteCmi5DocumentRead(db, lrs.cmi5, key.kind, docId);
         if (docId === undefined) {
           let q = docQuery(lrs, key);
           const since = c.req.query('since');
@@ -564,7 +614,10 @@ export function xapiRoutes(deps: AppDeps) {
       handle(async (c, lrs) => {
         const key = keyOf(c, lrs);
         const docId = c.req.query(idParam);
-        if (!docId || docId.length > 500) throw new XapiError(400, `The ${idParam} parameter is required.`);
+        if (!docId) throw new XapiError(400, `The ${idParam} parameter is required.`);
+        if (Buffer.byteLength(docId) > MAX_DOCUMENT_ID_BYTES)
+          throw new XapiError(400, `The ${idParam} parameter must be at most ${MAX_DOCUMENT_ID_BYTES} bytes.`);
+        if (lrs.cmi5) guardCmi5Document(key.kind, docId);
         const body = new Uint8Array(await c.req.arrayBuffer());
         const type = (c.req.header('content-type') ?? 'application/octet-stream').split(';')[0]!.trim().toLowerCase().slice(0, 120);
         const existing = await docQuery(lrs, key).where('docId', '=', docId).executeTakeFirst();
@@ -626,6 +679,7 @@ export function xapiRoutes(deps: AppDeps) {
         const key = keyOf(c, lrs);
         const docId = c.req.query(idParam);
         if (docId === undefined && isProfile) throw new XapiError(400, `The ${idParam} parameter is required.`);
+        if (lrs.cmi5) guardCmi5Document(key.kind, docId);
         if (docId !== undefined) {
           const existing = await docQuery(lrs, key).where('docId', '=', docId).executeTakeFirst();
           checkPreconditions(c, existing, false);
@@ -639,6 +693,7 @@ export function xapiRoutes(deps: AppDeps) {
           .where('activityIri', '=', key.activityIri)
           .where('registration', '=', key.registration);
         if (docId !== undefined) q = q.where('docId', '=', docId);
+        else if (lrs.cmi5) q = q.where('docId', '!=', PROTECTED_STATE_ID); // LMS.LaunchData stays
         await q.execute();
         return c.body(null, 204);
       }),

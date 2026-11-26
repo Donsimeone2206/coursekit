@@ -7,8 +7,10 @@ import { z } from 'zod';
 import type { LtiPlatformDetails } from '../../../shared/lti.js';
 import type { LtiSettings } from '../../../shared/types.js';
 import type { ResolvedConfig } from '../../config.js';
+import type { LtiToolRow } from '../../db/schema-lti.js';
 import type { DB } from '../../db/types.js';
 import { badRequest } from '../../lib/http.js';
+import { parseJson } from '../../lib/util.js';
 
 /** Custom parameter names: letters, digits and underscores. */
 export const LTI_CUSTOM_KEY = /^[A-Za-z0-9_]{1,100}$/;
@@ -42,22 +44,37 @@ export function platformDetails(config: Pick<ResolvedConfig, 'publicUrl'>): LtiP
   };
 }
 
-/** True when `url` is on the tool's host or one of its subdomains. */
-export function isOnToolDomain(url: string, toolUrl: string): boolean {
+type ToolDomains = Pick<LtiToolRow, 'toolUrl'> & Partial<Pick<LtiToolRow, 'domains'>>;
+
+const hostOf = (url: string) => {
   try {
-    const host = new URL(url).hostname.toLowerCase();
-    const toolHost = new URL(toolUrl).hostname.toLowerCase();
-    return host === toolHost || host.endsWith(`.${toolHost}`);
+    return new URL(url).hostname.toLowerCase();
   } catch {
-    return false;
+    return null;
   }
+};
+
+/**
+ * The hosts a tool's launch URLs and selected content may be on (or on their subdomains): the tool URL's host
+ * and, for a tool that registered itself, the domains it declared (Dynamic Registration).
+ */
+export function toolHosts(tool: ToolDomains): string[] {
+  const declared = parseJson<unknown>(tool.domains, []);
+  const domains = Array.isArray(declared) ? declared.filter((d): d is string => typeof d === 'string') : [];
+  return [...new Set([hostOf(tool.toolUrl), ...domains.map((d) => hostOf(`https://${d}`))].filter((h): h is string => !!h))];
+}
+
+/** True when `url` is on one of the tool's hosts (see toolHosts) or one of their subdomains. */
+export function isOnToolDomain(url: string, tool: ToolDomains): boolean {
+  const host = hostOf(url);
+  return !!host && toolHosts(tool).some((h) => host === h || host.endsWith(`.${h}`));
 }
 
 export async function validateLtiSettings(db: DB, _courseId: string, settings: LtiSettings): Promise<void> {
   if (!settings.toolId) throw badRequest('Pick an external tool.');
-  const tool = await db.selectFrom('ltiTools').select(['toolUrl']).where('id', '=', settings.toolId).executeTakeFirst();
+  const tool = await db.selectFrom('ltiTools').select(['toolUrl', 'domains']).where('id', '=', settings.toolId).executeTakeFirst();
   if (!tool) throw badRequest('That external tool does not exist.');
-  if (settings.launchUrl && !isOnToolDomain(settings.launchUrl, tool.toolUrl)) {
-    throw badRequest(`The launch URL must be on the tool's domain (${new URL(tool.toolUrl).hostname}).`);
+  if (settings.launchUrl && !isOnToolDomain(settings.launchUrl, tool)) {
+    throw badRequest(`The launch URL must be on the tool's domain (${toolHosts(tool).join(' or ')}).`);
   }
 }

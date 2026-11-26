@@ -35,7 +35,10 @@ import { seedDemoGradeCategories } from './demo-grade-categories.js';
 import { seedOpenBadgesDemo } from './demo-open-badges.js';
 import { seedLtiDemo } from './demo-lti.js';
 import { seedPackagesDemo } from './demo-packages.js';
+import { seedScormSequencingDemo } from './demo-scorm-sequencing.js';
 import { seedQuestionSharingDemo } from './demo-question-sharing.js';
+import { seedCmi5Demo } from './demo-cmi5.js';
+import { seedLiveClassesDemo } from './demo-live.js';
 
 export interface SeedDemoOptions {
   /** An existing administrator for the demo. If omitted, the first admin is used (or one is created). */
@@ -1630,6 +1633,9 @@ export async function seedDemo(deps: Pick<AppDeps, 'db' | 'events'>, options: Se
   await seedGroupModesDemo(deps);
   await seedPackagesDemo(deps);
   await seedQuestionSharingDemo(deps);
+  await seedScormSequencingDemo(deps);
+  await seedCmi5Demo(deps);
+  await seedLiveClassesDemo(deps);
   await seedCompletionDemo(deps); // after everything above: completion depends on the activities and the grade setup
   await seedOpenBadgesDemo(deps); // after the completion demo, which awards the badges
   return { created: true, password, users, courses: courses.length };

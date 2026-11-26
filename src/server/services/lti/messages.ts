@@ -7,6 +7,7 @@ import type { CourseRole, LtiSettings, SiteRole } from '../../../shared/types.js
 import type { ActivityRow, CourseRow, UserRow } from '../../db/schema.js';
 import type { LtiToolRow } from '../../db/schema-lti.js';
 import type { DB } from '../../db/types.js';
+import { parseJson } from '../../lib/util.js';
 import { getSiteSettings } from '../settings.js';
 import { platformGuid, platformKey } from './keys.js';
 import { toolCustomParams } from './tools.js';
@@ -26,9 +27,20 @@ export const SCOPES = {
 
 export const AGS_SCOPES = [SCOPES.lineItem, SCOPES.lineItemReadOnly, SCOPES.resultReadOnly, SCOPES.score];
 
-/** Scopes the tool may be granted, from what the administrator allowed. */
-export function allowedScopes(tool: Pick<LtiToolRow, 'allowAgs' | 'allowNrps'>): string[] {
-  return [...(tool.allowAgs ? AGS_SCOPES : []), ...(tool.allowNrps ? [SCOPES.memberships] : [])];
+/** Every service scope Coursekit supports. */
+export const SUPPORTED_SCOPES: string[] = [...AGS_SCOPES, SCOPES.memberships];
+
+export const isAgsScope = (scope: string) => (AGS_SCOPES as readonly string[]).includes(scope);
+
+/**
+ * Scopes the tool may be granted: the services the administrator allowed, narrowed to the scopes it asked
+ * for when it registered itself (Dynamic Registration). Tools added by hand have no such list.
+ */
+export function allowedScopes(tool: Pick<LtiToolRow, 'allowAgs' | 'allowNrps'> & { scopes?: string | null }): string[] {
+  const services = [...(tool.allowAgs ? AGS_SCOPES : []), ...(tool.allowNrps ? [SCOPES.memberships] : [])];
+  if (tool.scopes == null) return services;
+  const registered = parseJson<unknown>(tool.scopes, []);
+  return Array.isArray(registered) ? services.filter((s) => registered.includes(s)) : [];
 }
 
 const MEMBERSHIP = 'http://purl.imsglobal.org/vocab/lis/v2/membership#';
@@ -94,7 +106,7 @@ async function baseClaims(ctx: MessageContext, messageType: string, targetLinkUr
   };
   if (tool.shareName) claims.name = user.name;
   if (tool.shareEmail) claims.email = user.email;
-  if (tool.allowNrps) {
+  if (allowedScopes(tool).includes(SCOPES.memberships)) {
     claims[NRPS_CLAIM] = { context_memberships_url: `${issuer}/lti/nrps/${course.id}/memberships`, service_versions: ['2.0'] };
   }
   return claims;
@@ -125,9 +137,10 @@ export async function resourceLinkClaims(
     locale: 'en',
   };
   claims[`${LTI_CLAIM}custom`] = { ...toolCustomParams(tool), ...settings.custom };
-  if (tool.allowAgs) {
+  const agsScopes = allowedScopes(tool).filter(isAgsScope);
+  if (agsScopes.length) {
     claims[AGS_CLAIM] = {
-      scope: AGS_SCOPES,
+      scope: agsScopes,
       lineitems: `${issuer}/lti/ags/${course.id}/lineitems`,
       ...(activity.maxGrade != null ? { lineitem: `${issuer}/lti/ags/${course.id}/lineitems/${activity.id}` } : {}),
     };
@@ -145,7 +158,8 @@ export async function deepLinkingClaims(ctx: MessageContext, data: string, editi
     accept_types: ['ltiResourceLink'],
     accept_presentation_document_targets: ['iframe', 'window'],
     accept_multiple: !editing,
-    accept_lineitem: !!tool.allowAgs,
+    // A grade column only for tools that may send scores to it.
+    accept_lineitem: allowedScopes(tool).includes(SCOPES.score),
     auto_create: true,
     data,
   };

@@ -412,7 +412,7 @@ export function packageRuntime(win, boot) {
   };
 
   /**
-   * A run-time data model. `version` is '1.2' or '2004'; `init` = { values, counts, lms, nav, maxBytes }.
+   * A run-time data model. `version` is '1.2' or '2004'; `init` = { values, counts, lms, nav, data, edition, maxBytes }.
    * get() returns { value, error } and set() returns an error kind ('' when it worked).
    */
   function createModel(version, init) {
@@ -421,6 +421,9 @@ export function packageRuntime(win, boot) {
     var counts = {};
     var lms = (init && init.lms) || {};
     var nav = (init && init.nav) || { items: [], index: 0 };
+    var shared = (init && init.data) || [];
+    // Jump navigation requests are new in SCORM 2004 4th Edition: earlier editions don't know them.
+    var jumpOk = !(init && init.edition && init.edition !== '4th');
     var maxBytes = (init && init.maxBytes) || 512 * 1024;
     var bytes = 0;
     var k;
@@ -446,6 +449,7 @@ export function packageRuntime(win, boot) {
       return { pattern: pattern.join('.'), arrays: arrays };
     }
     function count(path, def) {
+      if (path === 'adl.data') return shared.length;
       if (def && def.ro) return 0;
       return counts[path] || 0;
     }
@@ -464,6 +468,11 @@ export function packageRuntime(win, boot) {
     function lookupNav(element) {
       var m = /^adl\.nav\.request_valid\.(choice|jump)\.\{target=([^}]+)\}$/.exec(element);
       if (!m) return null;
+      if (m[1] === 'jump' && !jumpOk) return 'false';
+      if (nav.valid) {
+        var targets = nav.valid[m[1]] || {};
+        return Object.prototype.hasOwnProperty.call(targets, m[2]) && targets[m[2]] === true ? 'true' : 'false';
+      }
       return nav.items.indexOf(m[2]) >= 0 ? 'true' : 'false';
     }
     function rawGet(element) {
@@ -513,8 +522,22 @@ export function packageRuntime(win, boot) {
       if (d.m === 'wo') return { value: '', error: 'WO' };
       if (p.arrays.length && within(p.arrays, false)) return { value: '', error: 'GETFAIL' };
       if (d.nav) {
+        if (nav.valid) {
+          var known = nav.valid[d.nav];
+          return { value: known === true ? 'true' : known === false ? 'false' : 'unknown', error: OK };
+        }
         var target = d.nav === 'continue' ? nav.index + 1 : nav.index - 1;
         return { value: target >= 0 && target < nav.items.length ? 'true' : 'false', error: OK };
+      }
+      var sd = version === '2004' ? /^adl\.data\.(\d+)\.(id|store)$/.exec(element) : null;
+      if (sd) {
+        var store = shared[Number(sd[1])];
+        if (sd[2] === 'id') return { value: String(store.id), error: OK };
+        if (!store.read) return { value: '', error: 'WO' };
+        var written = rawGet(element);
+        if (written === undefined) written = store.value;
+        if (written === undefined || written === null) return { value: '', error: 'NOTINIT' };
+        return { value: String(written), error: OK };
       }
       var stored = d.lms ? lms[element] : rawGet(element);
       if (stored === undefined || stored === null) {
@@ -541,6 +564,11 @@ export function packageRuntime(win, boot) {
       var d = p && defs[p.pattern];
       if (!d || !d.m) return 'UNDEF';
       if (d.m === 'ro') return 'RO';
+      if (p.pattern === 'adl.data.#.store') {
+        var target = shared[p.arrays[0].index];
+        if (!target) return 'SETFAIL';
+        if (!target.write) return 'RO';
+      }
       var arrays = p.arrays;
       var creating = false;
       if (arrays.length) {
@@ -556,6 +584,7 @@ export function packageRuntime(win, boot) {
       var error = d.t ? d.t(value) : OK;
       if (error) return error;
       if (version === '1.2' && element === 'cmi.core.lesson_status' && value === 'not attempted') return 'TYPE';
+      if (version === '2004' && element === 'adl.nav.request' && !jumpOk && /jump$/.test(value)) return 'TYPE';
 
       if (version === '2004') {
         var m = /^(cmi\.interactions\.\d+)\.(learner_response|correct_responses\.(\d+)\.pattern)$/.exec(element);
@@ -707,15 +736,25 @@ export function packageRuntime(win, boot) {
     }
   }
 
+  /** Tells the Coursekit page (the player around the frame, or the page that opened this window). */
   function tell(type, extra) {
-    var message = { source: 'coursekit-package', type: type, item: boot.item };
+    var message = { source: 'coursekit-package', type: type, item: boot.item, sid: boot.sid };
     if (extra) for (var key in extra) message[key] = extra[key];
     var origin = boot.origin || '*';
+    var targets = [];
     try {
-      if (win.top && win.top !== win) win.top.postMessage(message, origin);
-      else if (win.opener) win.opener.postMessage(message, origin);
+      if (win.top && win.top !== win) targets.push(win.top);
+      var topWin = win.top || win;
+      if (topWin.opener && targets.indexOf(topWin.opener) < 0) targets.push(topWin.opener);
     } catch (e) {
-      // the page is gone
+      // no access
+    }
+    for (var i = 0; i < targets.length; i++) {
+      try {
+        targets[i].postMessage(message, origin);
+      } catch (e) {
+        // the page is gone
+      }
     }
   }
 
@@ -734,6 +773,10 @@ export function packageRuntime(win, boot) {
   /** The server refused a commit for good (the link is no longer valid): later Commit/Finish calls report it. */
   var refused = false;
   var startedAt = 0;
+  /** The page is going away: a session that ends now ends because the learner left, not by the SCO's choice. */
+  var unloading = false;
+  /** The player is about to navigate (a learner pressed one of its buttons): the SCO's own navigation request is ignored. */
+  var lmsNav = false;
 
   /** Sends every element set in this session (the server ignores stale or repeated commits). */
   function send(terminate, beacon, after) {
@@ -743,7 +786,15 @@ export function packageRuntime(win, boot) {
     dirty = false;
     seq++;
     var elapsed = startedAt ? Math.round((Date.now() - startedAt) / 1000) : 0;
-    var body = JSON.stringify({ sid: boot.sid, seq: seq, ops: changes, terminate: !!terminate, elapsed: elapsed });
+    var body = JSON.stringify({
+      sid: boot.sid,
+      seq: seq,
+      ops: changes,
+      terminate: !!terminate,
+      elapsed: elapsed,
+      unload: unloading,
+      lms: lmsNav,
+    });
     sentChanges = changes.length;
     if (!boot.commitUrl) return (done(), true);
     try {
@@ -896,7 +947,19 @@ export function packageRuntime(win, boot) {
   }
   if (win.addEventListener) {
     win.addEventListener('pagehide', function () {
+      unloading = true;
       flush(true);
+    });
+    win.addEventListener('pageshow', function () {
+      unloading = false;
+    });
+    // The player asks before it closes this page for one of its own navigation buttons.
+    win.addEventListener('message', function (event) {
+      var data = event && event.data;
+      if (!data || data.source !== 'coursekit-player' || data.type !== 'navigate') return;
+      if (boot.origin && event.origin !== boot.origin) return;
+      lmsNav = true;
+      tell('navigate-ack');
     });
     if (doc && doc.addEventListener) {
       doc.addEventListener('visibilitychange', function () {

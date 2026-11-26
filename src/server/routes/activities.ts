@@ -24,6 +24,7 @@ import { activityGroupsSchema, saveActivityGroups } from '../services/group-sett
 import { notify } from '../services/notify.js';
 import { markCompleted, unmarkCompleted } from '../services/progress.js';
 import { deleteStoredFiles, packageStorageKeys, syncResults } from '../packages/service.js';
+import { liveActivityUpdated, publicLiveSettings } from '../services/live/hooks.js';
 import { countNeedsGrading, isExpired, regradeQuiz } from '../services/quiz.js';
 import { quizTotals } from '../services/quiz-slots.js';
 import { toCourseRef, toFileInfo, toPublicUser } from '../services/serialize.js';
@@ -167,6 +168,9 @@ export function activityRoutes(deps: AppDeps) {
       const s = settings as ActivitySettingsMap['resource'];
       detail.file = s.fileId ? ((await filesById(db, [s.fileId])).get(s.fileId) ?? null) : null;
     }
+    // Live classes: only people who edit the class see its meeting link and Zoom host.
+    if (type === 'live' && !access.can('course:manageContent'))
+      detail.settings = publicLiveSettings(settings as ActivitySettingsMap['live']);
 
     if (type === 'assignment') {
       const own = await db
@@ -333,7 +337,12 @@ export function activityRoutes(deps: AppDeps) {
         const issue = result.error.issues[0];
         throw badRequest(issue ? `${issue.path.map(String).join('.')}: ${issue.message}` : 'Invalid settings');
       }
-      if (def.validate) await def.validate(db, activity.courseId, result.data as never);
+      if (def.validate) {
+        await def.validate(db, activity.courseId, result.data as never, {
+          user,
+          previous: parseSettings(activity.type, activity.settings) as never,
+        });
+      }
       update.settings = JSON.stringify(result.data);
       if (activity.type === 'resource') resourceFileId = (result.data as ActivitySettingsMap['resource']).fileId ?? null;
     }
@@ -361,6 +370,11 @@ export function activityRoutes(deps: AppDeps) {
       // Grades from the tool were scaled to the old maximum when they arrived.
       const refreshed = await db.selectFrom('activities').selectAll().where('id', '=', activity.id).executeTakeFirstOrThrow();
       await regradeLtiActivity(deps, refreshed, activity.maxGrade);
+    }
+    if (activity.type === 'live') {
+      // Attendance-based completion follows the settings; provider meetings follow the changes (services/live).
+      const refreshed = await db.selectFrom('activities').selectAll().where('id', '=', activity.id).executeTakeFirstOrThrow();
+      await liveActivityUpdated(deps, refreshed);
     }
     if (activity.type === 'package' && (input.maxGrade !== undefined || input.settings)) {
       // Package grades are attempt scores times the maximum, picked by the grading method: recompute them.

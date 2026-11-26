@@ -25,7 +25,9 @@ import type {
   CourseCompletionsTable,
 } from './schema-completion.js';
 import type { OpenBadgeSharesTable } from './schema-open-badges.js';
+import type { Cmi5AuStatesTable, Cmi5SatisfiedTable, Cmi5SessionsTable } from './schema-cmi5.js';
 import type { LtiAccessTokensTable, LtiLineItemsTable, LtiScoresTable, LtiToolsTable, LtiUsedTokensTable } from './schema-lti.js';
+import type { LtiRegistrationsTable } from './schema-lti.js';
 import type {
   PackageAttemptsTable,
   PackageFilesTable,
@@ -35,6 +37,8 @@ import type {
   XapiStatementsTable,
 } from './schema-packages.js';
 import type { QuestionCategorySharesTable, QuizSlotPoolsTable } from './schema-question-sharing.js';
+import type { LiveAttendanceTable, LivePresenceTable, LiveRecordingsTable, LiveRoomsTable, LiveSessionsTable } from './schema-live.js';
+import type { PackageSequencingStatesTable } from './schema-sequencing.js';
 
 export interface SettingsTable {
   key: string;
@@ -391,6 +395,7 @@ export interface Database {
   ltiScores: LtiScoresTable;
   ltiAccessTokens: LtiAccessTokensTable;
   ltiUsedTokens: LtiUsedTokensTable;
+  ltiRegistrations: LtiRegistrationsTable;
   activityGroups: ActivityGroupsTable;
   packageVersions: PackageVersionsTable;
   packageFiles: PackageFilesTable;
@@ -398,6 +403,15 @@ export interface Database {
   packageScoStates: PackageScoStatesTable;
   xapiStatements: XapiStatementsTable;
   xapiDocuments: XapiDocumentsTable;
+  cmi5Sessions: Cmi5SessionsTable;
+  cmi5AuStates: Cmi5AuStatesTable;
+  cmi5Satisfied: Cmi5SatisfiedTable;
+  liveSessions: LiveSessionsTable;
+  liveRooms: LiveRoomsTable;
+  livePresence: LivePresenceTable;
+  liveAttendance: LiveAttendanceTable;
+  liveRecordings: LiveRecordingsTable;
+  packageSequencingStates: PackageSequencingStatesTable;
 }
 
 export type UserRow = Selectable<UsersTable>;

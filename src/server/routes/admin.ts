@@ -176,8 +176,14 @@ export function adminRoutes(deps: AppDeps) {
     const me = requireUser(c);
     const id = c.req.param('id');
     if (id === me.id) throw badRequest("You can't delete your own account.");
-    const result = await db.deleteFrom('users').where('id', '=', id).executeTakeFirst();
-    if (num(result.numDeletedRows) === 0) throw notFound('User');
+    const deleted = await db.transaction().execute(async (trx) => {
+      const result = await trx.deleteFrom('users').where('id', '=', id).executeTakeFirst();
+      if (num(result.numDeletedRows) === 0) return false;
+      // The learner's LRS documents (xAPI State, profiles, cmi5 LMS.LaunchData and preferences) have no foreign key.
+      await trx.deleteFrom('xapiDocuments').where('ownerId', '=', id).execute();
+      return true;
+    });
+    if (!deleted) throw notFound('User');
     return c.json({ ok: true });
   });
 

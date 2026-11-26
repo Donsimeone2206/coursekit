@@ -495,20 +495,26 @@ describe('the SCORM 2004 run-time', () => {
     expect(api.SetValue('cmi.interactions.0.timestamp', '2026-11-25T10:00:00Z')).toBe('true');
     expect(api.SetValue('cmi.interactions.0.latency', 'PT1M5.5S')).toBe('true');
     expect(api.SetValue('cmi.interactions.0.latency', '00:01:05')).toBe('false');
-    expect(api.SetValue('cmi.objectives.0.id', 'obj-1')).toBe('true');
-    expect(api.SetValue('cmi.objectives.1.id', 'obj-1')).toBe('false');
-    expect(api.GetLastError()).toBe('351');
-    expect(api.SetValue('cmi.objectives.0.id', 'obj-2')).toBe('false');
+    // The LMS starts cmi.objectives with the activity's objectives (the primary objective "p").
     expect(api.GetValue('cmi.objectives._count')).toBe('1');
-    expect(api.GetValue('cmi.objectives.0.success_status')).toBe('unknown');
+    expect(api.GetValue('cmi.objectives.0.id')).toBe('p');
+    expect(api.SetValue('cmi.objectives.0.id', 'obj-2')).toBe('false');
+    expect(api.SetValue('cmi.objectives.1.id', 'obj-1')).toBe('true');
+    expect(api.SetValue('cmi.objectives.2.id', 'obj-1')).toBe('false');
+    expect(api.GetLastError()).toBe('351');
+    expect(api.GetValue('cmi.objectives._count')).toBe('2');
+    expect(api.GetValue('cmi.objectives.1.success_status')).toBe('unknown');
     expect(api.GetValue('cmi.interactions.0.objectives._count')).toBe('0');
     expect(api.GetValue('cmi.comments_from_lms._count')).toBe('0');
     expect(api.SetValue('cmi.comments_from_learner.0.comment', '{lang=en}Nice')).toBe('true');
     expect(api.SetValue('cmi.suspend_data', 'x'.repeat(64_001))).toBe('false');
-    expect(api.GetValue('adl.nav.request_valid.previous')).toBe('true');
-    expect(api.GetValue('adl.nav.request_valid.continue')).toBe('true');
+    // No sequencing rules: the defaults allow choice but not flow.
+    expect(api.GetValue('adl.nav.request_valid.previous')).toBe('false');
+    expect(api.GetValue('adl.nav.request_valid.continue')).toBe('false');
     expect(api.GetValue('adl.nav.request_valid.choice.{target=one}')).toBe('true');
     expect(api.GetValue('adl.nav.request_valid.choice.{target=nope}')).toBe('false');
+    expect(api.GetValue('adl.nav.request_valid.jump.{target=three}')).toBe('true');
+    expect(api.GetValue('adl.data._count')).toBe('0');
     expect(api.SetValue('adl.nav.request', '{target=one}choice')).toBe('true');
     // The success status follows the scaled passing score (0.7).
     expect(api.SetValue('cmi.score.scaled', '0.65')).toBe('true');
@@ -528,12 +534,18 @@ describe('the SCORM 2004 run-time', () => {
     for (const s of win.sent) expect((await commit(lms, token, s.body)).body).toMatchObject({ recorded: true, rejected: 0 });
     await settle(lms);
     let attempt = await lms.db.selectFrom('packageAttempts').selectAll().executeTakeFirstOrThrow();
-    // Part one is still missing (and the glossary asset hasn't been opened), so the attempt goes on.
-    expect(attempt).toMatchObject({ status: 'in_progress', completionStatus: 'incomplete', score: 0.85 });
+    // The SCO asked for part one, which is now open; the course isn't complete yet. The course's score
+    // is its rolled-up measure: part two's 0.85 over three parts that each weigh 1.
+    expect(attempt).toMatchObject({ status: 'in_progress', completionStatus: 'incomplete', lastItemId: 'one' });
+    expect(attempt.score).toBeCloseTo(0.85 / 3, 5);
+    // The page of part two can't record any more: its delivery is over.
+    expect((await fetchRaw(lms, `/content/${token}/__coursekit/runtime.js`)).status).toBe(403);
+    expect((await commit(lms, token, { sid: 'later', ops: [['cmi.score.scaled', '0.1']] })).status).toBe(403);
 
-    // Part one completes by progress measure (threshold 0.8); the asset completes when launched.
+    // Part one completes by progress measure (threshold 0.8); the asset completes when it opens.
     const one = await school.sam.post(`/api/packages/${activityId}/launch`, { itemId: 'one' });
     expect(one.body.url).toContain('one.html?x=1&lang=en');
+    expect(one.body.sequencing).toMatchObject({ ended: false, controls: { previous: false, continue: false, exitAll: true } });
     await commit(lms, tokenOf(one.body.url), {
       ops: [
         ['cmi.progress_measure', '0.9'],
@@ -543,14 +555,14 @@ describe('the SCORM 2004 run-time', () => {
       ],
       terminate: true,
     });
-    await school.sam.post(`/api/packages/${activityId}/launch`, { itemId: 'three' });
+    const three = await school.sam.post(`/api/packages/${activityId}/launch`, { itemId: 'three' });
+    expect(three.body).toMatchObject({ itemId: 'three' });
     await settle(lms);
     attempt = await lms.db.selectFrom('packageAttempts').selectAll().executeTakeFirstOrThrow();
     expect(attempt).toMatchObject({ completionStatus: 'completed', successStatus: 'passed' });
-    // Average of the two SCO scores: 0.6 and 0.85.
-    expect(attempt.score).toBeCloseTo(0.725, 5);
+    expect(attempt.score).toBeCloseTo(0.85 / 3, 5);
     const grade = await lms.db.selectFrom('grades').select('score').where('activityId', '=', activityId).executeTakeFirstOrThrow();
-    expect(grade.score).toBe(72.5);
+    expect(grade.score).toBe(28.33);
     expect(await lms.db.selectFrom('completions').selectAll().where('activityId', '=', activityId).execute()).toHaveLength(1);
   });
 });
@@ -603,7 +615,32 @@ describe('demo packages', () => {
       await demo.seedDemo({ password: 'demo-password' });
       const maya = await login(demo, 'maya.chen@coursekit.test', 'demo-password');
       const activities = await demo.db.selectFrom('activities').select(['id', 'title']).where('type', '=', 'package').execute();
-      expect(activities.map((a) => a.title).sort()).toEqual(['Accessibility basics', 'Colour contrast challenge']);
+      expect(activities.map((a) => a.title).sort()).toEqual([
+        'Accessibility basics',
+        'Colour contrast challenge',
+        'Inclusive design',
+        'Screen reader basics',
+      ]);
+      // The section's summary describes each of its modules.
+      const section = await demo.db
+        .selectFrom('sections')
+        .select(['id', 'summary'])
+        .where('title', '=', 'Accessibility')
+        .executeTakeFirstOrThrow();
+      const modules = await demo.db
+        .selectFrom('activities')
+        .select('title')
+        .where('sectionId', '=', section.id)
+        .orderBy('position')
+        .execute();
+      expect(modules.map((m) => m.title)).toEqual([
+        'Accessibility basics',
+        'Colour contrast challenge',
+        'Inclusive design',
+        'Screen reader basics',
+      ]);
+      expect(section.summary).toMatch(/^Four /);
+      for (const { title } of modules) expect(section.summary.toLowerCase()).toContain(title.toLowerCase());
       const scorm = activities.find((a) => a.title === 'Accessibility basics')!;
       const report = await maya.get(`/api/packages/${scorm.id}/report`);
       const sofia = report.body.rows.find((r: { user: { name: string } }) => r.user.name === 'Sofia Martinez');

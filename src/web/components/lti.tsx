@@ -180,7 +180,7 @@ export function LtiFields({
         label="Graded"
         description={
           tool && !tool.grades
-            ? "This tool isn't allowed to send grades. An administrator can turn on grade services for it."
+            ? "This tool isn't allowed to send grades to the gradebook. Administrators decide which tools can."
             : 'The tool sends scores to the gradebook.'
         }
         checked={maxGrade !== ''}

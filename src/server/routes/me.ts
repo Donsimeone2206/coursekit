@@ -10,6 +10,7 @@ import { addDays, likePattern, newId, now, num, round } from '../lib/util.js';
 import { assertCan, loadCourseAccess } from '../services/access.js';
 import { summarizeCourses } from '../services/courses.js';
 import { staffWorkRules, unavailableActivityIds } from '../services/group-modes.js';
+import { liveCalendarEvents, liveTimelineItems } from '../services/live/calendar.js';
 import { toCourseRef } from '../services/serialize.js';
 
 type EnrolledCourse = CourseRow & { myRole: 'teacher' | 'assistant' | 'student' };
@@ -233,6 +234,15 @@ export function meRoutes(deps: AppDeps) {
         dueThisWeek: timeline.filter((t) => (t.status === 'todo' || t.status === 'overdue') && t.dueAt <= weekAhead).length,
       },
     };
+    // Live classes: the next session of each class, added after the counts above (sessions aren't due work).
+    data.timeline.push(
+      ...(await liveTimelineItems(
+        db,
+        enrolled.filter((e) => e.myRole === 'student'),
+        unavailable,
+      )),
+    );
+    data.timeline.sort((a, b) => a.dueAt.localeCompare(b.dueAt));
     return c.json(data);
   });
 
@@ -343,6 +353,9 @@ export function meRoutes(deps: AppDeps) {
         }
       }
     }
+
+    // Live class sessions, with the same visibility rules as due dates.
+    events.push(...(await liveCalendarEvents(db, enrolled, staffIds, unavailable, q.from, q.to)));
 
     const custom = await db
       .selectFrom('calendarEvents')

@@ -1,8 +1,10 @@
 import { z } from 'zod';
 import { DEFAULT_COMPLETION } from '../../shared/constants.js';
 import type { ActivitySettingsMap, ActivityType, CompletionMode } from '../../shared/types.js';
+import type { UserRow } from '../db/schema.js';
 import type { DB } from '../db/types.js';
 import { ltiCustomParamsSchema, validateLtiSettings } from './lti/settings.js';
+import { liveSettingsSchema, validateLiveSettings } from './live/activity.js';
 
 const emptyToNull = (v: unknown) => (v === '' ? null : v);
 const httpUrl = z.url({ protocol: /^https?$/, message: 'Enter a valid http(s) URL' }).max(2000);
@@ -22,7 +24,14 @@ export interface ActivityTypeDefinition<T extends ActivityType = ActivityType> {
   /** Graded types whose teachers may also leave them ungraded (maxGrade null). */
   optionalGrade?: boolean;
   /** Checks that need the database (e.g. that a referenced record exists), after the settings parsed. Throws an ApiError. */
-  validate?: (db: DB, courseId: string, settings: ActivitySettingsMap[T]) => Promise<void>;
+  validate?: (db: DB, courseId: string, settings: ActivitySettingsMap[T], context: ActivityValidateContext<T>) => Promise<void>;
+}
+
+/** Who is saving an activity, and what its settings were, for checks that depend on them (validate). */
+export interface ActivityValidateContext<T extends ActivityType = ActivityType> {
+  user: UserRow;
+  /** The settings before this change; null when the activity is being created. */
+  previous: ActivitySettingsMap[T] | null;
 }
 
 export const activityTypes: { [K in ActivityType]: ActivityTypeDefinition<K> } = {
@@ -112,6 +121,15 @@ export const activityTypes: { [K in ActivityType]: ActivityTypeDefinition<K> } =
       gradingMethod: z.enum(['highest', 'last']).default('highest'),
       requirePass: z.boolean().default(false),
     }),
+  },
+  live: {
+    type: 'live',
+    graded: false,
+    defaultCompletion: DEFAULT_COMPLETION.live,
+    // auto: attending at least `attendanceRequired` sessions (services/live/attendance.ts).
+    completionModes: ['none', 'manual', 'auto'],
+    settings: liveSettingsSchema,
+    validate: validateLiveSettings,
   },
 };
 

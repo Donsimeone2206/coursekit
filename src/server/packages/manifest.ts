@@ -2,11 +2,22 @@
  * Reads what Coursekit needs from a package: imsmanifest.xml (SCORM 1.2 and 2004: the default
  * organization's items, resources, launch URLs with xml:base and parameters, and the per-item data
  * the run-time exposes) or tincan.xml (xAPI: the activity id and launch page).
- * Sequencing and navigation rules of SCORM 2004 are not read, apart from the primary objective's
- * minimum normalized measure (cmi.scaled_passing_score) and the attempt duration limit.
+ * For SCORM 2004 it also reads the full Sequencing Definition Model of the organization and its
+ * items (see sequencing/parse.ts).
  */
 import { DOMParser, type Element } from '@xmldom/xmldom';
 import type { PackageItem, PackageKind } from '../../shared/packages.js';
+import {
+  MAX_DEPTH,
+  MAX_PACKAGE_CONDITIONS,
+  MAX_PACKAGE_MAPS,
+  MAX_PACKAGE_RULES,
+  readSequencingTree,
+  sequencingSize,
+  type SequencingNode,
+} from './sequencing/parse.js';
+import { MAX_OBJECTIVES } from './sequencing/state.js';
+import type { SequencingTree } from './sequencing/types.js';
 import { PackageError } from './zip.js';
 
 export interface StructureItem extends PackageItem {
@@ -20,6 +31,8 @@ export interface StructureItem extends PackageItem {
   timeLimitAction: string | null;
   completionThreshold: number | null;
   scaledPassingScore: number | null;
+  /** SCORM 2004: false for items with isvisible="false" (kept in the activity tree, left out of the table of contents). */
+  visible?: boolean;
 }
 
 export interface PackageStructure {
@@ -29,7 +42,13 @@ export interface PackageStructure {
   items: StructureItem[];
   /** xAPI: the activity IRI from tincan.xml. */
   activityId: string | null;
+  /** SCORM 2004: the activity tree with its sequencing definitions (the root first, then `items` in order). */
+  sequencing?: SequencingTree;
+  /** Things in the manifest that were ignored or replaced by defaults. */
+  warnings?: string[];
 }
+
+const MAX_WARNINGS = 50;
 
 const BASE = 'http://package.invalid/';
 
@@ -137,6 +156,7 @@ export function parseScormManifest(source: string, hasFile: (path: string) => bo
   const root = parseXml(source, 'imsmanifest.xml');
   if (root.localName?.toLowerCase() !== 'manifest') throw new PackageError('imsmanifest.xml has no <manifest> element.');
   const { kind, edition } = detectScormVersion(root, source);
+  const scorm2004 = kind === 'scorm2004';
 
   const resourcesEl = kid(root, 'resources');
   const resources = new Map<string, Element>();
@@ -151,12 +171,14 @@ export function parseScormManifest(source: string, hasFile: (path: string) => bo
   const org = orgs.find((o) => attr(o, 'identifier') === defaultId) ?? orgs[0] ?? null;
 
   const items: StructureItem[] = [];
+  const nodes: SequencingNode[] = [];
   const ids = new Set<string>();
-  const add = (input: Omit<StructureItem, 'launchable'>) => {
+  const add = (input: Omit<StructureItem, 'launchable'>): string => {
     let id = input.id || `item-${items.length + 1}`;
     while (ids.has(id)) id = `${id}-${items.length + 1}`;
     ids.add(id);
     items.push({ ...input, id, launchable: input.href !== null });
+    return id;
   };
 
   const resourceLaunch = (resource: Element, parameters: string | null) => {
@@ -172,16 +194,19 @@ export function parseScormManifest(source: string, hasFile: (path: string) => bo
     return { ...launch, sco: type !== 'asset' };
   };
 
-  const walk = (parent: Element, depth: number) => {
+  const walk = (parent: Element, depth: number, parentNode: number) => {
     for (const item of kids(parent, 'item')) {
-      if ((attr(item, 'isvisible') ?? 'true').toLowerCase() === 'false') continue;
+      // SCORM 1.2 leaves hidden items out; in SCORM 2004 they stay in the activity tree, just not in the table of contents.
+      const visible = (attr(item, 'isvisible') ?? 'true').toLowerCase() !== 'false';
+      if (!visible && !scorm2004) continue;
+      // Sequencing walks the activity tree from the root at every step: a sane depth keeps that cheap.
+      if (scorm2004 && depth >= MAX_DEPTH) throw new PackageError(`The manifest nests its items more than ${MAX_DEPTH} levels deep.`);
       const ref = attr(item, 'identifierref');
       const resource = ref ? resources.get(ref) : undefined;
       if (ref && !resource)
         throw new PackageError(`The manifest item "${attr(item, 'identifier') ?? ref}" points to a resource that doesn't exist.`);
       const launch = resource ? resourceLaunch(resource, attr(item, 'parameters')) : null;
       const seq = kid(item, 'sequencing');
-      const primary = kid(kid(seq, 'objectives'), 'primaryObjective');
       const threshold = kid(item, 'completionThreshold');
       let completionThreshold: number | null = null;
       if (threshold) {
@@ -193,9 +218,10 @@ export function parseScormManifest(source: string, hasFile: (path: string) => bo
               : null
             : num(text(threshold), 0, 1);
       }
-      add({
+      const title = text(kid(item, 'title')).slice(0, 300) || (launch ? 'Untitled' : 'Section');
+      const id = add({
         id: attr(item, 'identifier') ?? '',
-        title: text(kid(item, 'title')).slice(0, 300) || (launch ? 'Untitled' : 'Section'),
+        title,
         depth,
         href: launch?.href ?? null,
         path: launch?.path ?? null,
@@ -207,23 +233,23 @@ export function parseScormManifest(source: string, hasFile: (path: string) => bo
             ? text(kid(item, 'maxtimeallowed')) || null
             : attr(kid(seq, 'limitConditions'), 'attemptAbsoluteDurationLimit'),
         timeLimitAction: text(kid(item, 'timelimitaction')) || null,
-        completionThreshold: kind === 'scorm2004' ? completionThreshold : null,
-        scaledPassingScore:
-          kind === 'scorm2004' && primary && attr(primary, 'satisfiedByMeasure') === 'true'
-            ? (num(text(kid(primary, 'minNormalizedMeasure')), -1, 1) ?? 1)
-            : null,
+        completionThreshold: scorm2004 ? completionThreshold : null,
+        scaledPassingScore: null,
+        ...(scorm2004 && !visible ? { visible: false } : {}),
       });
-      walk(item, depth + 1);
+      const index = nodes.length;
+      nodes.push({ el: item, id, title, parent: parentNode, depth, launchable: launch !== null, sco: launch?.sco ?? false, visible });
+      walk(item, depth + 1, index);
     }
   };
 
-  if (org) walk(org, 0);
+  if (org) walk(org, 0, -1);
   if (!items.some((i) => i.launchable)) {
     // No organization: every resource with a launch address becomes an item.
     for (const [id, resource] of resources) {
       const launch = resourceLaunch(resource, null);
       if (!launch) continue;
-      add({
+      const finalId = add({
         id,
         title: id,
         depth: 0,
@@ -235,6 +261,7 @@ export function parseScormManifest(source: string, hasFile: (path: string) => bo
         completionThreshold: null,
         scaledPassingScore: null,
       });
+      nodes.push({ el: resource, id: finalId, title: id, parent: -1, depth: 0, launchable: true, sco: launch.sco, visible: true });
     }
   }
   if (!items.some((i) => i.launchable)) throw new PackageError("The manifest doesn't list anything to launch.");
@@ -244,7 +271,31 @@ export function parseScormManifest(source: string, hasFile: (path: string) => bo
     text(kid(org, 'title')) ||
     text(kid(kid(kid(kid(root, 'metadata'), 'lom'), 'general'), 'title')) ||
     items.find((i) => i.launchable)!.title;
-  return { kind, edition, title: title.slice(0, 200), items, activityId: null };
+  const structure: PackageStructure = { kind, edition, title: title.slice(0, 200), items, activityId: null };
+  if (scorm2004) {
+    const warnings: string[] = [];
+    const warn = (message: string) => {
+      if (warnings.length < MAX_WARNINGS) warnings.push(message);
+    };
+    let rootId = attr(org, 'identifier') || 'organization';
+    if (ids.has(rootId)) rootId = '__root';
+    const tree = readSequencingTree(root, org, rootId, structure.title, nodes, warn);
+    const size = sequencingSize(tree);
+    if (size.objectives > MAX_OBJECTIVES) throw new PackageError('The manifest defines too many objectives.');
+    if (size.rules > MAX_PACKAGE_RULES || size.conditions > MAX_PACKAGE_CONDITIONS || size.maps > MAX_PACKAGE_MAPS) {
+      throw new PackageError('The manifest defines too many sequencing rules or objective maps.');
+    }
+    // The run-time values that come from the (possibly shared) sequencing definitions.
+    items.forEach((item, i) => {
+      const def = tree.activities[i + 1]!;
+      const primary = def.objectives[0]!;
+      item.scaledPassingScore = primary.satisfiedByMeasure ? primary.minNormalizedMeasure : null;
+      if (!item.maxTimeAllowed && def.attemptDurationLimit !== null) item.maxTimeAllowed = `PT${def.attemptDurationLimit}S`;
+    });
+    structure.sequencing = tree;
+    if (warnings.length) structure.warnings = warnings;
+  }
+  return structure;
 }
 
 export function parseTincan(source: string, hasFile: (path: string) => boolean): PackageStructure {
