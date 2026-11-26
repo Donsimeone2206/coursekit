@@ -2,10 +2,12 @@ import { extname } from 'node:path';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { requireUser, type AppDeps, type AppEnv } from '../context.js';
-import type { FileRow } from '../db/schema.js';
+import type { FileRow, UserRow } from '../db/schema.js';
 import { ApiError, badRequest, forbidden, notFound, parse } from '../lib/http.js';
 import { newId, now } from '../lib/util.js';
-import { assertCan, loadCourseAccess } from '../services/access.js';
+import { assertCan, loadActivityAccess, loadCourseAccess, type ActivityAccess } from '../services/access.js';
+import { canSeeDiscussion, forumGroupView } from '../services/group-forums.js';
+import { inScope, studentScope } from '../services/group-modes.js';
 import { toFileInfo } from '../services/serialize.js';
 
 /** Types browsers may render inline. Everything else (HTML, SVG, scripts...) is served as a download. */
@@ -73,10 +75,40 @@ export function fileRoutes(deps: AppDeps) {
       size: file.size,
       storageKey,
       createdAt: now(),
+      activityId: null,
+      discussionId: null,
     };
     await db.insertInto('files').values(row).execute();
     return c.json(toFileInfo(row), 201);
   });
+
+  /**
+   * Someone else's file in a course. A file that belongs to an activity follows the activity's rules (hidden, limited
+   * to groups: see services/group-modes.ts), so new activity types get them too; submitted work also needs the
+   * student to be one the viewer sees in that activity, and a forum upload the discussion it was posted in.
+   */
+  async function canDownload(user: UserRow, file: FileRow): Promise<boolean> {
+    if (!file.activityId) {
+      const access = await loadCourseAccess(db, user, file.courseId!);
+      return file.context === 'submission' ? access.can('grades:viewAll') : access.can('course:view') || file.context === 'course';
+    }
+    let access: ActivityAccess;
+    try {
+      access = await loadActivityAccess(db, user, file.activityId);
+    } catch (err) {
+      if (err instanceof ApiError) return false;
+      throw err;
+    }
+    if (file.context === 'submission') {
+      if (!access.can('grades:viewAll') || !file.ownerId) return false;
+      return inScope(db, await studentScope(db, access), file.ownerId);
+    }
+    if (file.discussionId) {
+      const discussion = await db.selectFrom('discussions').select('groupId').where('id', '=', file.discussionId).executeTakeFirst();
+      return !!discussion && canSeeDiscussion(await forumGroupView(db, access), discussion.groupId);
+    }
+    return true;
+  }
 
   r.get('/:fileId', async (c) => {
     const user = requireUser(c);
@@ -85,10 +117,7 @@ export function fileRoutes(deps: AppDeps) {
 
     const isOwner = file.ownerId === user.id;
     if (!isOwner && user.role !== 'admin' && file.context !== 'avatar') {
-      if (!file.courseId) throw notFound('File');
-      const access = await loadCourseAccess(db, user, file.courseId);
-      const allowed = file.context === 'submission' ? access.can('grades:viewAll') : access.can('course:view') || file.context === 'course';
-      if (!allowed) throw notFound('File');
+      if (!file.courseId || !(await canDownload(user, file))) throw notFound('File');
     }
 
     const stream = await storage.get(file.storageKey);

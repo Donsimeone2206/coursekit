@@ -10,6 +10,7 @@ import { parseSettings } from '../services/activity-types.js';
 import { createQuestion, ensureCategories, transact, updateQuestion } from '../services/question-bank.js';
 import { editorQuestion, questionInputSchema } from '../services/question-types.js';
 import { describeSlots, saveSlots, slotInputSchema, type SlotInput } from '../services/quiz-slots.js';
+import { inScope, studentScope, whereInScope } from '../services/group-modes.js';
 import {
   attemptQuestions,
   canReview,
@@ -79,12 +80,16 @@ export function quizRoutes(deps: AppDeps) {
     const current = new Map((await loadQuizQuestions(db, activity.id)).map((q) => [q.id, q]));
 
     await transact(db, async (trx) => {
-      const categoryId = [...current.values()][0]?.categoryId ?? (await ensureCategories(trx, activity.courseId))[0]!.id;
+      const own = [...current.values()].filter((q) => q.courseId === activity.courseId);
+      const categoryId = own[0]?.categoryId ?? (await ensureCategories(trx, activity.courseId))[0]!.id;
       const slots: SlotInput[] = [];
       for (const input of questions) {
         const existing = input.id ? current.get(input.id) : undefined;
+        // Questions shared from another course's bank stay as they are: only their course edits them.
         const row = existing
-          ? await updateQuestion(trx, existing, input)
+          ? existing.courseId === activity.courseId
+            ? await updateQuestion(trx, existing, input)
+            : existing
           : await createQuestion(trx, activity.courseId, categoryId, input, user.id);
         slots.push({ kind: 'question', questionId: row.id, points: input.points });
       }
@@ -127,13 +132,16 @@ export function quizRoutes(deps: AppDeps) {
     const user = requireUser(c);
     const access = await quizAccess(c, c.req.param('activityId'));
     const all = c.req.query('all') === '1' && access.can('quiz:viewAllAttempts');
-    const rows = await db
+    const query = db
       .selectFrom('quizAttempts')
       .innerJoin('users', 'users.id', 'quizAttempts.userId')
       .selectAll('quizAttempts')
       .select(['users.name as userName', 'users.avatarUrl as userAvatarUrl'])
       .where('quizAttempts.activityId', '=', access.activity.id)
-      .$if(!all, (q) => q.where('quizAttempts.userId', '=', user.id))
+      .$if(!all, (q) => q.where('quizAttempts.userId', '=', user.id));
+    // Everyone's attempts: only the students whose work the viewer sees (separate groups, group restrictions).
+    const scope = all ? await studentScope(db, access, c.req.query('groupId')) : null;
+    const rows = await (scope ? whereInScope(db, query, 'quizAttempts.userId', scope) : query)
       .orderBy('quizAttempts.startedAt', 'desc')
       .limit(500)
       .execute();
@@ -154,7 +162,8 @@ export function quizRoutes(deps: AppDeps) {
   r.get('/activities/:activityId/grading', async (c) => {
     const access = await quizAccess(c, c.req.param('activityId'));
     assertCan(access, 'quiz:viewAllAttempts');
-    const rows = await db
+    const scope = await studentScope(db, access, c.req.query('groupId'));
+    const query = db
       .selectFrom('quizAttempts')
       .innerJoin('users', 'users.id', 'quizAttempts.userId')
       .innerJoin('enrolments', (join) =>
@@ -171,10 +180,8 @@ export function quizRoutes(deps: AppDeps) {
       ])
       .where('quizAttempts.activityId', '=', access.activity.id)
       .where('quizAttempts.status', '=', 'needs_grading')
-      .where('enrolments.role', '=', 'student')
-      .orderBy('quizAttempts.finishedAt', 'asc')
-      .limit(500)
-      .execute();
+      .where('enrolments.role', '=', 'student');
+    const rows = await whereInScope(db, query, 'quizAttempts.userId', scope).orderBy('quizAttempts.finishedAt', 'asc').limit(500).execute();
     const items: QuizGradingItem[] = rows.map((a) => ({
       attemptId: a.id,
       attemptNumber: a.attemptNumber,
@@ -192,6 +199,8 @@ export function quizRoutes(deps: AppDeps) {
     const access = await loadActivityAccess(db, user, attempt.activityId);
     const own = attempt.userId === user.id;
     if (!own && !access.can('quiz:viewAllAttempts')) throw notFound('Attempt');
+    // Staff only open the attempts of students whose work they see (separate groups, group restrictions).
+    if (!own && !(await inScope(db, await studentScope(db, access), attempt.userId))) throw notFound('Attempt');
     return { user, attempt, access, own };
   }
 

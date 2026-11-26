@@ -1,5 +1,72 @@
 # Changelog
 
+## 0.3.0
+
+External tools (LTI 1.3 Advantage), SCORM and xAPI packages, group modes, question import, export and sharing, and Open Badges export.
+
+**Before upgrading, back up your database.** Migrations `007` to `011` run on start. They add tables, plus a few columns: `009_group_modes` adds `group_mode` to courses and activities, `group_id` to discussions, and `activity_id` and `discussion_id` to files, which it fills in for existing files.
+
+### External tools (LTI 1.3 Advantage)
+
+- Coursekit is an LTI 1.3 platform. Administrators register tools under **Administration → External tools**: URLs, exact redirect URIs, the tool's keys (JWKS URL, PEM or JWK), custom parameters, what may be shared (names, emails) and which services the tool may use. Coursekit generates the client ID and deployment ID and shows every platform detail to copy into the tool. Tools can be turned off at any time.
+- A new **External tool** activity opens a tool in a new window or embedded in the page, with an optional launch URL on the tool's domain, custom parameters and an optional maximum grade.
+- Launches follow LTI 1.3 Core and the 1EdTech Security Framework: third-party initiated login, an OIDC authorization endpoint with exact redirect URIs, and RS256 id_tokens signed with a key Coursekit creates on first use and publishes at `/lti/jwks`. The launch hint is signed, lasts two minutes, works once and is tied to the person, tool and activity.
+- **Deep Linking 2.0:** teachers choose **Select content** to pick links inside the tool. Coursekit verifies the tool's signed response and creates or updates the activities.
+- **Assignment and Grade Services 2.0:** line items, scores and results. Scores go into the gradebook scaled to the activity's maximum (and are rescaled when it changes); a completed score completes the activity. Tools get access tokens through the OAuth 2.0 client credentials grant with a signed client assertion, rate limited per tool and replay-protected.
+- **Names and Role Provisioning Services 2.0:** the class list with role filters and paging, with names and emails only when the tool may have them.
+- Tools reach a course's grades and class list only while one of its activities uses the tool, and only with the services an administrator allowed.
+- Needs `COURSEKIT_PUBLIC_URL`, which is the LTI issuer.
+
+### SCORM and xAPI packages
+
+- A new **SCORM / xAPI package** activity: upload SCORM 1.2, SCORM 2004 (2nd, 3rd and 4th edition) or xAPI (Tin Can) zips. Replacing a package keeps learners who already started on their version. Folders zipped by macOS Finder work too.
+- Safe unzipping: path traversal, absolute paths, symlinks, duplicate names, zip bombs, too many files and packages above `COURSEKIT_MAX_PACKAGE_MB` (default 500 MB) are refused.
+- Package content is served sandboxed (`Content-Security-Policy: sandbox`, an opaque origin) from signed, expiring links under `/content/`, so a package can never act as the signed-in user.
+- SCORM run-times (`window.API` and `window.API_1484_11`) with the 1.2 and 2004 data models and error codes, resume, session and total time, and server-side checks of every commit. Progress keeps saving when a page stays open longer than the six-hour link lifetime.
+- Attempts with limits, highest or last attempt grading, an optional pass requirement for completion, review of finished attempts, staff previews that record nothing, and a staff report (limited to their groups for teaching assistants in separate groups).
+- A built-in xAPI Learning Record Store at `/xapi/`: statements (with voiding and queries), Activity State with ETags, Activity and Agent Profiles, xAPI 1.0.3 and 2.0.0, and CORS. Launch credentials only reach the learner's own data, with size limits per learner.
+- Deleting an activity, a section or a course removes its package files from storage.
+
+### Group modes and restricted activities
+
+- Courses have a default group mode (no groups, separate groups, visible groups), and each activity can override it. A new capability, `course:accessAllGroups`, goes to teachers (and administrators).
+- Separate groups: students only see their own groups' discussions, and teaching assistants only see the students of their own groups in submissions, grading, quiz attempts, package reports, the dashboard's to-grade counts and the gradebook.
+- Forums with groups: discussions belong to a group or to all participants. Students post in their own groups; teachers post anywhere and can move discussions. Listing, replying, counts and notifications follow the group mode.
+- Any activity can be limited to chosen groups. Other students don't see it anywhere, can't download its files, and it doesn't count towards their grades, progress or completion; the gradebook and the CSV export show their cells as N/A. Staff see a "Groups: ..." badge.
+- Saving an activity is now all or nothing, so a refused change never leaves a restricted activity open to everyone.
+- New event `activity.groups.updated`. Course completion is checked again when people join or leave groups.
+
+### Question import, export and sharing
+
+- Import Moodle XML and GIFT files, with a preview first: counts per type, the categories to create or reuse, and notes and problems with their question and line numbers. Then an all-or-nothing import of the valid questions, converting HTML, Moodle auto-format, Markdown and plain text to Markdown.
+- Export as Moodle XML (every type; importable by Moodle 4.x and 5.x and by Coursekit) or GIFT (no ordering questions): the whole bank, a category with or without its subcategories, or chosen questions.
+- Copy questions or whole categories to other courses whose question bank you manage.
+- Share categories (with their subcategories) with other courses you teach, or, as an administrator, with every course. Shared categories are read-only in the other course's bank and quiz editor and can be used for fixed and random questions; quizzes keep their questions when a share ends.
+- An example GIFT file is in `test/fixtures/questions/example.gift`.
+
+### Open Badges export
+
+- People can share a badge they earned from the badge page or their profile. Nothing is public until they do, and they can stop sharing at any time.
+- **Open Badges 2.0** hosted verification: issuer profile, BadgeClass and assertion (the recipient as a salted SHA-256 email hash), with **Copy link** for backpacks and **Download badge**, an SVG with the assertion baked in.
+- **Open Badges 3.0**: **Download credential** gives an OpenBadgeCredential signed as a VC-JWT, as a file or baked into the badge image, with a W3C Bitstring Status List for revocation and the public key at `/openbadges/v3/jwks.json`.
+- Revoking an award, deleting the badge or the account, or stopping sharing revokes the public documents straight away (`410 Gone`). Revocation is permanent: a restored award has to be shared again.
+- A public verification page at `/verify-badge/<id>`. Administrators set the issuer name, contact email and description under **Administration → Badges**; the contact email is published in the issuer profile.
+
+### Changes to check if you integrate with Coursekit
+
+- **Teaching assistants can no longer change groups** (`course:manageGroups` is now teachers only). They still see every group.
+- File downloads now follow the rules of the file's activity (hidden, group-restricted, or another group's submission).
+- Forum reply notifications only reach people who can still open the discussion.
+- `ActivityType` gains `'lti'` and `'package'`, and course, activity and discussion rows gain `groupMode` / `groupId`.
+- New routes outside `/api`: `/lti/`, `/content/`, `/xapi/` and `/openbadges/`. If a reverse proxy only forwards some paths, add these.
+- New runtime dependencies: `jose`, `@xmldom/xmldom` and `fflate`. New option `maxPackageMb` / `COURSEKIT_MAX_PACKAGE_MB`.
+
+### Known limitations
+
+- SCORM 2004 sequencing and navigation rules aren't implemented (multi-part packages get a table of contents with Previous and Next), and cmi5 packages are refused.
+- LTI: no Dynamic Registration; line items a tool creates itself aren't shown in the gradebook; the class list and score passback don't apply group restrictions (such scores show as N/A). Behind a reverse proxy, the token endpoint counts failed requests per proxy address, as there is no trusted-proxy setting yet.
+- Open Badges are baked into SVG only (no PNG).
+
 ## 0.2.0
 
 Email notifications, groups and cohorts, course completion with certificates and badges, question banks with three new question types, and grade categories with weights.

@@ -6,6 +6,7 @@ import { badRequest, conflict, forbidden, notFound } from '../lib/http.js';
 import { newId, now, num, parseJson, round } from '../lib/util.js';
 import { parseSettings } from './activity-types.js';
 import { upsertGrade } from './grades.js';
+import { whereInScope, type StudentScope } from './group-modes.js';
 import { notify } from './notify.js';
 import { markCompleted } from './progress.js';
 import {
@@ -290,9 +291,9 @@ export async function regradeQuiz(deps: Pick<AppDeps, 'db' | 'events'>, activity
   }
 }
 
-/** Students' attempts at a quiz that wait for essays to be marked. */
-export async function countNeedsGrading(db: DB, activityId: string): Promise<number> {
-  const row = await db
+/** Students' attempts at a quiz that wait for essays to be marked (only the students in `scope`, when given). */
+export async function countNeedsGrading(db: DB, activityId: string, scope?: StudentScope): Promise<number> {
+  const query = db
     .selectFrom('quizAttempts')
     .innerJoin('enrolments', (join) =>
       join.onRef('enrolments.userId', '=', 'quizAttempts.userId').onRef('enrolments.courseId', '=', 'quizAttempts.courseId'),
@@ -300,8 +301,8 @@ export async function countNeedsGrading(db: DB, activityId: string): Promise<num
     .select((eb) => eb.fn.countAll().as('n'))
     .where('quizAttempts.activityId', '=', activityId)
     .where('quizAttempts.status', '=', 'needs_grading')
-    .where('enrolments.role', '=', 'student')
-    .executeTakeFirst();
+    .where('enrolments.role', '=', 'student');
+  const row = await (scope ? whereInScope(db, query, 'quizAttempts.userId', scope) : query).executeTakeFirst();
   return num(row?.n);
 }
 

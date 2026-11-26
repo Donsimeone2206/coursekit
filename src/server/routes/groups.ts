@@ -18,7 +18,7 @@ import {
 const groupName = z.string().trim().min(1, 'Enter a name').max(100);
 const description = z.string().trim().max(1000);
 
-/** Course groups: `/api/courses/:courseId/groups`. Changing groups needs `course:manageGroups`. */
+/** Course groups: `/api/courses/:courseId/groups`. Changing groups needs `course:manageGroups` (teachers, not assistants). */
 export function groupRoutes(deps: AppDeps) {
   const r = new Hono<AppEnv>();
   const { db } = deps;
@@ -26,7 +26,7 @@ export function groupRoutes(deps: AppDeps) {
   async function manager(c: AppContext) {
     const user = requireUser(c);
     const access = await loadCourseAccess(db, user, c.req.param('courseId')!);
-    assertCan(access, 'course:manageGroups', 'Only teachers and teaching assistants can manage groups.');
+    assertCan(access, 'course:manageGroups', 'Only teachers can change groups.');
     assertWritable(access);
     return access;
   }

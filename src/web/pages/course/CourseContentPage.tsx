@@ -24,6 +24,7 @@ import { CompletionCard } from '@/components/completion/completion-card';
 import { ActivityIcon } from '@/components/course';
 import { Page } from '@/components/layout/shell';
 import { Markdown } from '@/components/markdown';
+import { GroupRestrictionBadge } from '@/components/group-modes';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardHeader } from '@/components/ui/card';
@@ -241,6 +242,7 @@ function ActivityRow({
           <EyeOff /> Hidden
         </Badge>
       )}
+      <GroupRestrictionBadge groups={activity.groupRestriction} className="hidden max-w-36 sm:inline-flex" />
       {editing ? (
         <div className="relative flex items-center gap-0.5">
           <Button variant="ghost" size="icon-sm" onClick={onEdit} aria-label="Edit activity">

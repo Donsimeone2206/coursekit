@@ -2,6 +2,7 @@ import type { CourseSummary, PublicUser } from '../../shared/types.js';
 import type { DB } from '../db/types.js';
 import type { CourseRow, UserRow } from '../db/schema.js';
 import { num, slugify } from '../lib/util.js';
+import { unavailableActivityIds } from './group-modes.js';
 import { progressByCourse } from './progress.js';
 
 /** Builds catalog/dashboard cards for a list of courses, as seen by `user`. */
@@ -56,6 +57,18 @@ export async function summarizeCourses(db: DB, user: UserRow | null, courses: Co
   const students = new Map(studentRows.map((r) => [r.courseId, num(r.n)]));
   const activities = new Map(activityRows.map((r) => [r.courseId, num(r.n)]));
   const mine = new Map(myEnrolments.map((e) => [e.courseId, e]));
+  // Activities limited to groups the user isn't in don't count for them (staff see everything).
+  const notStaff = user && user.role !== 'admin' ? ids.filter((id) => (mine.get(id)?.role ?? 'student') === 'student') : [];
+  const unavailable = user && notStaff.length ? await unavailableActivityIds(db, user.id, notStaff) : new Set<string>();
+  if (unavailable.size) {
+    const hidden = await db
+      .selectFrom('activities')
+      .select('courseId')
+      .where('id', 'in', [...unavailable])
+      .where('visible', '=', 1)
+      .execute();
+    for (const row of hidden) activities.set(row.courseId, Math.max(0, (activities.get(row.courseId) ?? 0) - 1));
+  }
   const categoryNames = new Map(categories.map((c) => [c.id, c.name]));
   const progress = user
     ? await progressByCourse(

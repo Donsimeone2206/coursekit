@@ -29,8 +29,13 @@ import { gradeQuestion } from '../services/quiz.js';
 import { seedDemoEmail } from './demo-email.js';
 import { seedDemoGroups } from './demo-groups.js';
 import { seedCompletionDemo } from './demo-completion.js';
+import { seedGroupModesDemo } from './demo-group-modes.js';
 import { insertDemoQuizQuestions, seedQuestionBankDemo, type DemoQuestionRow } from './demo-question-bank.js';
 import { seedDemoGradeCategories } from './demo-grade-categories.js';
+import { seedOpenBadgesDemo } from './demo-open-badges.js';
+import { seedLtiDemo } from './demo-lti.js';
+import { seedPackagesDemo } from './demo-packages.js';
+import { seedQuestionSharingDemo } from './demo-question-sharing.js';
 
 export interface SeedDemoOptions {
   /** An existing administrator for the demo. If omitted, the first admin is used (or one is created). */
@@ -1621,6 +1626,11 @@ export async function seedDemo(deps: Pick<AppDeps, 'db' | 'events'>, options: Se
   await seedDemoGroups(deps);
   await seedQuestionBankDemo(deps); // after the quiz attempts: it fills in their question snapshots
   await seedDemoGradeCategories(db);
-  await seedCompletionDemo(deps); // last: completion depends on the grade setup
+  await seedLtiDemo(deps);
+  await seedGroupModesDemo(deps);
+  await seedPackagesDemo(deps);
+  await seedQuestionSharingDemo(deps);
+  await seedCompletionDemo(deps); // after everything above: completion depends on the activities and the grade setup
+  await seedOpenBadgesDemo(deps); // after the completion demo, which awards the badges
   return { created: true, password, users, courses: courses.length };
 }

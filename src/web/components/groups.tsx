@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { UsersRound } from 'lucide-react';
 import { useCallback, useMemo, useState } from 'react';
-import type { CourseGroups, GroupRef } from '@shared/types';
+import type { CourseGroups, GroupChoice, GroupRef } from '@shared/types';
 import { api } from '@/lib/api';
 import { cn, colorFor, initials } from '@/lib/utils';
 import { Badge } from './ui/badge';
@@ -53,14 +53,27 @@ export function GroupBadges({ groups, className }: { groups: GroupRef[] | undefi
  * State for filtering a list of people by group. `matches(userId)` is true for everyone while no group is
  * chosen, and stays that way if the chosen group disappears.
  */
-export function useGroupFilter(courseId: string | undefined) {
+export function useGroupFilter(courseId: string | undefined, choice?: GroupChoice) {
   const { data } = useCourseGroups(courseId);
   const [groupId, setGroupId] = useState('');
-  const groups = useMemo(() => data?.groups ?? [], [data]);
+  // With group modes, only the groups the viewer may pick (in separate groups, a teaching assistant's own groups).
+  const groups = useMemo(() => {
+    const all = data?.groups ?? [];
+    if (!choice) return all;
+    const allowed = new Set(choice.groups.map((g) => g.id));
+    return all.filter((g) => allowed.has(g.id));
+  }, [data, choice]);
   const active = groups.find((g) => g.id === groupId) ?? null;
   const memberIds = useMemo(() => (active ? new Set(active.members.map((m) => m.id)) : null), [active]);
   const matches = useCallback((userId: string) => !memberIds || memberIds.has(userId), [memberIds]);
-  return { groups, groupId: active ? groupId : '', setGroupId, active, matches };
+  return {
+    groups,
+    groupId: active ? groupId : '',
+    setGroupId,
+    active,
+    matches,
+    allLabel: choice?.allParticipants === false ? 'All my groups' : 'All groups',
+  };
 }
 
 export type GroupFilterState = ReturnType<typeof useGroupFilter>;
@@ -86,7 +99,7 @@ export function GroupFilter({
       }}
       className={cn('sm:w-52', className)}
     >
-      <option value="">All groups</option>
+      <option value="">{filter.allLabel}</option>
       {filter.groups.map((g) => (
         <option key={g.id} value={g.id}>
           {g.name} ({g.members.length})

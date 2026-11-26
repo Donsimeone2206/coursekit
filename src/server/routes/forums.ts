@@ -3,11 +3,22 @@ import { z } from 'zod';
 import type { CourseRole, Discussion, DiscussionDetail, Post } from '../../shared/types.js';
 import { requireUser, type AppContext, type AppDeps, type AppEnv } from '../context.js';
 import type { DB } from '../db/types.js';
-import { badRequest, forbidden, notFound, readBody } from '../lib/http.js';
+import { badRequest, forbidden, notFound, readBody, readQuery } from '../lib/http.js';
 import { markdownSchema } from '../lib/schemas.js';
 import { excerpt, newId, now, num } from '../lib/util.js';
 import { assertCan, assertWritable, loadActivityAccess } from '../services/access.js';
 import { parseSettings } from '../services/activity-types.js';
+import {
+  canSeeDiscussion,
+  linkPostFiles,
+  discussionGroups,
+  forumGroupView,
+  groupForNewDiscussion,
+  groupLetsReply,
+  replyNote,
+  visibleDiscussionsFilter,
+} from '../services/group-forums.js';
+import { accessesAllGroups, audienceOf, effectiveGroupMode, groupChoice } from '../services/group-modes.js';
 import { notify } from '../services/notify.js';
 import { markCompleted } from '../services/progress.js';
 import { toCourseRef } from '../services/serialize.js';
@@ -37,21 +48,33 @@ export function forumRoutes(deps: AppDeps) {
     return access;
   }
 
+  /** A discussion the viewer can see: in separate groups, other groups' discussions are "not found". */
   async function discussionAccess(c: AppContext, discussionId: string) {
     const discussion = await db.selectFrom('discussions').selectAll().where('id', '=', discussionId).executeTakeFirst();
     if (!discussion) throw notFound('Discussion');
     const access = await forumAccess(c, discussion.activityId);
-    return { discussion, access };
+    const view = await forumGroupView(db, access);
+    if (!canSeeDiscussion(view, discussion.groupId)) throw notFound('Discussion');
+    return { discussion, access, view };
   }
 
   r.get('/activities/:activityId/discussions', async (c) => {
     const access = await forumAccess(c, c.req.param('activityId'));
+    const view = await forumGroupView(db, access);
+    // ?groupId= shows one group's discussions (and those for all participants); it must be a group the viewer can pick.
+    const { groupId } = readQuery(c, z.object({ groupId: z.string().max(40).optional() }));
+    const group =
+      groupId && view.mode !== 'none' ? ((await groupChoice(db, access, view.mode)).groups.find((g) => g.id === groupId) ?? null) : null;
+    if (groupId && view.mode !== 'none' && !group) throw notFound('Group');
+    const visible = visibleDiscussionsFilter(view);
     const rows = await db
       .selectFrom('discussions')
       .innerJoin('users', 'users.id', 'discussions.userId')
       .selectAll('discussions')
       .select(['users.name as userName', 'users.avatarUrl as userAvatarUrl'])
       .where('discussions.activityId', '=', access.activity.id)
+      .$if(!!visible, (q) => q.where(visible!))
+      .$if(!!group, (q) => q.where((eb) => eb.or([eb('discussions.groupId', 'is', null), eb('discussions.groupId', '=', group!.id)])))
       .orderBy('discussions.pinned', 'desc')
       .orderBy('discussions.lastPostAt', 'desc')
       .limit(200)
@@ -66,6 +89,11 @@ export function forumRoutes(deps: AppDeps) {
           .execute()
       : [];
     const bodies = new Map(firstPosts.map((p) => [p.discussionId, p.body]));
+    const groups = await discussionGroups(
+      db,
+      access.course.id,
+      rows.map((d) => d.groupId),
+    );
     const items: Discussion[] = rows.map((d) => ({
       id: d.id,
       activityId: d.activityId,
@@ -77,6 +105,7 @@ export function forumRoutes(deps: AppDeps) {
       lastPostAt: d.lastPostAt,
       replyCount: d.replyCount,
       excerpt: excerpt(bodies.get(d.id) ?? '', 180),
+      group: d.groupId ? (groups.get(d.groupId) ?? null) : null,
     }));
     return c.json(items);
   });
@@ -90,7 +119,16 @@ export function forumRoutes(deps: AppDeps) {
     if (!settings.studentsCanStartDiscussions && !access.can('forum:moderate')) {
       throw forbidden('Only teachers can start discussions in this forum.');
     }
-    const input = await readBody(c, z.object({ title: z.string().trim().min(1, 'Add a title').max(200), body: bodySchema }));
+    const input = await readBody(
+      c,
+      z.object({
+        title: z.string().trim().min(1, 'Add a title').max(200),
+        body: bodySchema,
+        /** In a forum with groups: the group to post in; null (teachers only) is for all participants. */
+        groupId: z.string().max(40).nullable().optional(),
+      }),
+    );
+    const groupId = await groupForNewDiscussion(db, access, input.groupId);
     const ts = now();
     const discussionId = newId();
     const postId = newId();
@@ -108,6 +146,7 @@ export function forumRoutes(deps: AppDeps) {
           replyCount: 0,
           lastPostAt: ts,
           createdAt: ts,
+          groupId,
         })
         .execute();
       await trx
@@ -123,6 +162,13 @@ export function forumRoutes(deps: AppDeps) {
           updatedAt: ts,
         })
         .execute();
+      await linkPostFiles(trx, {
+        body: input.body,
+        userId: user.id,
+        courseId: access.course.id,
+        activityId: access.activity.id,
+        discussionId,
+      });
     });
     if (access.enrolment && access.activity.completion === 'auto') await markCompleted(deps, access.activity, user.id);
     events.emit('forum.post.created', { postId, discussionId, courseId: access.course.id, userId: user.id });
@@ -131,8 +177,12 @@ export function forumRoutes(deps: AppDeps) {
 
   r.get('/discussions/:discussionId', async (c) => {
     const user = requireUser(c);
-    const { discussion, access } = await discussionAccess(c, c.req.param('discussionId'));
+    const { discussion, access, view } = await discussionAccess(c, c.req.param('discussionId'));
     const moderate = access.can('forum:moderate');
+    const group = discussion.groupId
+      ? ((await discussionGroups(db, access.course.id, [discussion.groupId])).get(discussion.groupId) ?? null)
+      : null;
+    const groupAllows = groupLetsReply(view, discussion.groupId, moderate);
     const rows = await db
       .selectFrom('posts')
       .innerJoin('users', 'users.id', 'posts.userId')
@@ -176,10 +226,12 @@ export function forumRoutes(deps: AppDeps) {
       replyCount: discussion.replyCount,
       excerpt: excerpt(author?.body ?? ''),
       posts,
-      canReply: access.can('forum:post') && !access.readOnly && (!discussion.locked || moderate),
+      canReply: access.can('forum:post') && !access.readOnly && (!discussion.locked || moderate) && groupAllows,
       canModerate: moderate,
       course: toCourseRef(access.course),
       activityTitle: access.activity.title,
+      group,
+      replyNote: groupAllows ? null : replyNote(view, discussion.groupId, group?.name ?? null),
     };
     return c.json(detail);
   });
@@ -189,15 +241,28 @@ export function forumRoutes(deps: AppDeps) {
     const { discussion, access } = await discussionAccess(c, c.req.param('discussionId'));
     const input = await readBody(
       c,
-      z.object({ title: z.string().trim().min(1).max(200).optional(), pinned: z.boolean().optional(), locked: z.boolean().optional() }),
+      z.object({
+        title: z.string().trim().min(1).max(200).optional(),
+        pinned: z.boolean().optional(),
+        locked: z.boolean().optional(),
+        /** Move the discussion to another group, or (null) to all participants. Teachers only. */
+        groupId: z.string().max(40).nullable().optional(),
+      }),
     );
     const moderate = access.can('forum:moderate');
     if ((input.pinned !== undefined || input.locked !== undefined) && !moderate)
       throw forbidden('Only moderators can pin or lock discussions.');
     if (input.title !== undefined && !moderate && discussion.userId !== user.id) throw forbidden();
+    let groupId: string | null | undefined;
+    if (input.groupId !== undefined) {
+      if (!moderate || !accessesAllGroups(access)) throw forbidden('Only teachers can move discussions between groups.');
+      if (effectiveGroupMode(access.course, access.activity) === 'none') throw badRequest('This forum does not use groups.');
+      groupId = await groupForNewDiscussion(db, access, input.groupId);
+    }
     await db
       .updateTable('discussions')
       .set({
+        ...(groupId !== undefined ? { groupId } : {}),
         ...(input.title !== undefined ? { title: input.title } : {}),
         ...(input.pinned !== undefined ? { pinned: input.pinned ? 1 : 0 } : {}),
         ...(input.locked !== undefined ? { locked: input.locked ? 1 : 0 } : {}),
@@ -218,10 +283,13 @@ export function forumRoutes(deps: AppDeps) {
 
   r.post('/discussions/:discussionId/posts', async (c) => {
     const user = requireUser(c);
-    const { discussion, access } = await discussionAccess(c, c.req.param('discussionId'));
+    const { discussion, access, view } = await discussionAccess(c, c.req.param('discussionId'));
     assertCan(access, 'forum:post');
     assertWritable(access);
     if (discussion.locked && !access.can('forum:moderate')) throw forbidden('This discussion is locked.');
+    if (!groupLetsReply(view, discussion.groupId, access.can('forum:moderate'))) {
+      throw forbidden(replyNote(view, discussion.groupId, null) ?? 'You can’t reply to this discussion.');
+    }
     const input = await readBody(c, z.object({ body: bodySchema, parentId: z.string().max(40).nullable().optional() }));
 
     const root = await db
@@ -253,9 +321,16 @@ export function forumRoutes(deps: AppDeps) {
       updatedAt: ts,
     };
     await db.insertInto('posts').values(post).execute();
+    await linkPostFiles(db, { ...post, activityId: discussion.activityId });
     await refreshCounts(db, discussion.id);
 
-    const recipients = [discussion.userId, parent?.userId].filter((id): id is string => !!id && id !== user.id);
+    // Only people who can still see the discussion hear about it (groups, restrictions, enrolment).
+    const recipients = await audienceOf(
+      db,
+      access.activity,
+      [discussion.userId, parent?.userId].filter((id): id is string => !!id && id !== user.id),
+      { discussionGroupId: discussion.groupId },
+    );
     await notify(db, recipients, {
       type: 'forum',
       title: `${user.name} replied in “${discussion.title}”`,
@@ -276,11 +351,12 @@ export function forumRoutes(deps: AppDeps) {
   }
 
   r.patch('/posts/:postId', async (c) => {
-    const { user, post, access } = await postAccess(c);
+    const { user, post, discussion, access } = await postAccess(c);
     assertWritable(access);
     if (post.userId !== user.id && !access.can('forum:moderate')) throw forbidden('You can only edit your own posts.');
     const input = await readBody(c, z.object({ body: bodySchema }));
     await db.updateTable('posts').set({ body: input.body, updatedAt: now() }).where('id', '=', post.id).execute();
+    await linkPostFiles(db, { ...post, body: input.body, activityId: discussion.activityId });
     return c.json({ ok: true });
   });
 

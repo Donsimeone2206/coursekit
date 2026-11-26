@@ -82,6 +82,7 @@ function SlotCard({
                 {q.name && <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{q.excerpt}</p>}
                 <p className="mt-1 text-xs text-muted-foreground">
                   {TYPE_META[q.type].short} · {q.categoryName}
+                  {q.sharedFrom && ` · Shared from ${q.sharedFrom.courseTitle}`}
                 </p>
               </div>
             </>
@@ -99,6 +100,7 @@ function SlotCard({
                 {slot.includeSubcategories && ' and its subcategories'}
               </p>
               <p className="mt-0.5 text-xs text-muted-foreground">
+                {slot.category?.sharedFrom && `Shared from ${slot.category.sharedFrom.courseTitle}. `}
                 Picked for each attempt, never repeating a question.
                 {slot.available != null && ` ${plural(slot.available, 'question')} to choose from.`}
               </p>
@@ -150,9 +152,11 @@ function SlotCard({
               <Button variant="ghost" size="icon-sm" onClick={onPreview} aria-label={`Preview question ${label}`}>
                 <Eye />
               </Button>
-              <Button variant="ghost" size="icon-sm" onClick={onEdit} aria-label={`Edit question ${label}`}>
-                <Pencil />
-              </Button>
+              {!q.sharedFrom && (
+                <Button variant="ghost" size="icon-sm" onClick={onEdit} aria-label={`Edit question ${label}`}>
+                  <Pencil />
+                </Button>
+              )}
             </>
           )}
           <Button

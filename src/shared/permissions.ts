@@ -27,6 +27,8 @@ export const COURSE_CAPABILITIES = [
   'badges:award',
   'questionbank:manage',
   'grades:manage',
+  /** See and take part in every group's work and discussions, whatever the group mode. Teachers and administrators. */
+  'course:accessAllGroups',
 ] as const;
 
 export type CourseCapability = (typeof COURSE_CAPABILITIES)[number];
@@ -46,7 +48,8 @@ export const ROLE_CAPABILITIES: Record<CourseRole, readonly CourseCapability[]> 
     'forum:post',
     'forum:moderate',
     'announcement:post',
-    'course:manageGroups',
+    // Not course:manageGroups: group membership decides what group restrictions and separate groups let people see
+    // (teaching assistants included), so only teachers change it, as in Moodle. Assistants still see every group.
     'completion:viewReport',
     'badges:award',
   ],

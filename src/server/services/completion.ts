@@ -18,6 +18,7 @@ import { now, num, parseJson } from '../lib/util.js';
 import { announceAwards, awardBadgesForCompletion, pruneDeletedCourse, type BadgeAwards } from './badges.js';
 import { issueCertificates, issueMissingCertificates, toCertificateRef } from './certificates.js';
 import { courseTotals } from './course-total.js';
+import { loadAvailability, unavailableActivityIds } from './group-modes.js';
 import { notify } from './notify.js';
 
 type Deps = Pick<AppDeps, 'db' | 'events'>;
@@ -90,22 +91,24 @@ export function requiredActivities(settings: CourseCompletionSettings, activitie
   return tracked.filter((a) => selected.has(a.id));
 }
 
-/** Completed-activity counts per user, limited to `activityIds` (and to `userIds` when given). */
-async function doneCounts(db: DB, courseId: string, activityIds: string[], userIds?: string[]): Promise<Map<string, number>> {
-  const counts = new Map<string, number>();
-  if (activityIds.length === 0 || userIds?.length === 0) return counts;
+/**
+ * The activities each user completed, limited to `activityIds` (and to `userIds` when given). Per activity, because
+ * activities limited to groups only count for their groups' members.
+ */
+async function doneSets(db: DB, courseId: string, activityIds: string[], userIds?: string[]): Promise<Map<string, Set<string>>> {
+  const done = new Map<string, Set<string>>();
+  if (activityIds.length === 0 || userIds?.length === 0) return done;
   const query = (users?: string[]) =>
     db
       .selectFrom('completions')
-      .select(['userId', (eb) => eb.fn.countAll().as('n')])
+      .select(['userId', 'activityId'])
       .where('courseId', '=', courseId)
       .where('activityId', 'in', activityIds)
       .$if(!!users, (q) => q.where('userId', 'in', users!))
-      .groupBy('userId')
       .execute();
   const rows = userIds ? (await Promise.all(chunks(userIds).map((c) => query(c)))).flat() : await query();
-  for (const row of rows) counts.set(row.userId, num(row.n));
-  return counts;
+  for (const row of rows) done.set(row.userId, (done.get(row.userId) ?? new Set()).add(row.activityId));
+  return done;
 }
 
 /** Active students of the course who haven't completed it yet (optionally only some of them). */
@@ -231,15 +234,20 @@ export async function evaluateCompletion(
 
   const candidates = await pendingStudents(db, courseId, userIds);
   if (candidates.length === 0) return [];
-  const done = await doneCounts(
+  const done = await doneSets(
     db,
     courseId,
     required.map((a) => a.id),
     userIds ? candidates : undefined,
   );
+  const availability = await loadAvailability(db, courseId, userIds ? candidates : undefined);
   const totals = settings.minGrade != null ? await courseTotals(db, courseId, candidates) : null;
   const qualified = candidates.filter((userId) => {
-    if ((done.get(userId) ?? 0) < required.length) return false;
+    // Only the required activities available to the student count (group restrictions).
+    const mine = required.filter((a) => availability.isAvailable(a.id, userId));
+    if (mine.length === 0 && settings.minGrade == null) return false;
+    const finished = done.get(userId);
+    if (mine.some((a) => !finished?.has(a.id))) return false;
     if (settings.minGrade == null) return true;
     const total = totals?.get(userId) ?? null;
     return total != null && total >= settings.minGrade;
@@ -343,7 +351,9 @@ export async function completionStatus(db: DB, courseId: string, userId: string)
   };
   if (!settings.enabled) return { ...base, criteria: [], progress: completion ? 100 : 0 };
 
-  const required = requiredActivities(settings, await completionActivities(db, courseId));
+  // Activities limited to groups the student isn't in aren't part of their checklist.
+  const unavailable = await unavailableActivityIds(db, userId, [courseId]);
+  const required = requiredActivities(settings, await completionActivities(db, courseId)).filter((a) => !unavailable.has(a.id));
   const doneRows = required.length
     ? await db
         .selectFrom('completions')
@@ -388,22 +398,25 @@ export async function completionReport(db: DB, courseId: string): Promise<Comple
     .orderBy('users.name', 'asc')
     .execute();
   const studentIds = students.map((s) => s.id);
-  const [completions, certificates, done, totals] = await Promise.all([
+  const [completions, certificates, done, totals, availability] = await Promise.all([
     db.selectFrom('courseCompletions').select(['userId', 'completedAt']).where('courseId', '=', courseId).execute(),
     db.selectFrom('certificates').select(['id', 'code', 'userId', 'revokedAt']).where('courseId', '=', courseId).execute(),
-    doneCounts(
+    doneSets(
       db,
       courseId,
       required.map((a) => a.id),
     ),
     settings.minGrade != null ? courseTotals(db, courseId, studentIds) : Promise.resolve(null),
+    loadAvailability(db, courseId),
   ]);
   const completedAt = new Map(completions.map((c) => [c.userId, c.completedAt]));
   const certificateOf = new Map(certificates.map((c) => [c.userId, c]));
-  const criteriaCount = required.length + (settings.minGrade != null ? 1 : 0);
 
   const rows: CompletionReportRow[] = students.map((s) => {
-    const activitiesDone = Math.min(done.get(s.id) ?? 0, required.length);
+    // Each student's own requirements: activities limited to groups they aren't in don't count.
+    const mine = required.filter((a) => availability.isAvailable(a.id, s.id));
+    const criteriaCount = mine.length + (settings.minGrade != null ? 1 : 0);
+    const activitiesDone = mine.filter((a) => done.get(s.id)?.has(a.id)).length;
     const grade = totals?.get(s.id) ?? null;
     const gradeMet = settings.minGrade != null ? grade != null && grade >= settings.minGrade : null;
     const finished = completedAt.get(s.id) ?? null;
@@ -412,7 +425,7 @@ export async function completionReport(db: DB, courseId: string): Promise<Comple
     return {
       user: { id: s.id, name: s.name, email: s.email, avatarUrl: s.avatarUrl },
       activitiesDone,
-      activitiesTotal: required.length,
+      activitiesTotal: mine.length,
       progress: finished ? 100 : criteriaCount ? Math.round((met / criteriaCount) * 100) : 0,
       grade,
       gradeMet,
@@ -491,6 +504,14 @@ export function startCompletionEngine(deps: Deps): CompletionEngine {
   const unsubscribe = [
     deps.events.on('activity.completed', (e) => check(e.courseId, e.userId)),
     deps.events.on('grade.updated', (e) => check(e.courseId, e.userId)),
+    // Joining or leaving a group changes which group-restricted activities a student must complete.
+    deps.events.on('group.member.added', (e) => check(e.courseId, e.userId)),
+    deps.events.on('group.member.removed', (e) => check(e.courseId, e.userId)),
+    deps.events.on('activity.groups.updated', (e) => {
+      if (stopped) return;
+      tasks.push(async () => void (await evaluateCompletion(deps, e.courseId)));
+      kick();
+    }),
     // A new gradebook setup (categories, weights) can change every student's course total.
     deps.events.on('gradebook.setup.updated', (e) => {
       if (stopped) return;

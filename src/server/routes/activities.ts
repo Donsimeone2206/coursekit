@@ -10,13 +10,36 @@ import { newId, now, num, parseJson } from '../lib/util.js';
 import { assertCan, assertWritable, loadActivityAccess, type ActivityAccess } from '../services/access.js';
 import { activityTypes, parseSettings } from '../services/activity-types.js';
 import { upsertGrade } from '../services/grades.js';
-import { findVisibleGroup, groupMemberIds } from '../services/groups.js';
+import { regradeLtiActivity } from '../services/lti/services.js';
+import { countDiscussions } from '../services/group-forums.js';
+import {
+  activityGroupInfo,
+  groupHiddenActivityIds,
+  inScope,
+  restrictionRefs,
+  studentScope,
+  whereInScope,
+} from '../services/group-modes.js';
+import { activityGroupsSchema, saveActivityGroups } from '../services/group-settings.js';
 import { notify } from '../services/notify.js';
 import { markCompleted, unmarkCompleted } from '../services/progress.js';
+import { deleteStoredFiles, packageStorageKeys, syncResults } from '../packages/service.js';
 import { countNeedsGrading, isExpired, regradeQuiz } from '../services/quiz.js';
 import { quizTotals } from '../services/quiz-slots.js';
 import { toCourseRef, toFileInfo, toPublicUser } from '../services/serialize.js';
 import { activityMeta } from './courses.js';
+
+/**
+ * A staff member may only grade students whose work they see (separate groups), and only students the activity
+ * applies to (group restrictions).
+ */
+export async function assertGradable(db: DB, access: ActivityAccess, userId: string) {
+  const scope = await studentScope(db, access);
+  if (!(await inScope(db, { groupIds: scope.groupIds, restrictedTo: null }, userId))) throw notFound('Student');
+  if (!(await inScope(db, { groupIds: null, restrictedTo: scope.restrictedTo }, userId))) {
+    throw badRequest("This activity is limited to groups this student isn't in, so it can't be graded for them.");
+  }
+}
 
 async function filesById(db: DB, ids: string[]): Promise<Map<string, FileInfo>> {
   if (ids.length === 0) return new Map();
@@ -74,7 +97,10 @@ async function neighbours(db: DB, access: ActivityAccess) {
     .orderBy('sections.position', 'asc')
     .orderBy('activities.position', 'asc')
     .execute();
-  const list = rows.filter((r) => showHidden || (r.visible && r.sectionVisible));
+  const groupHidden = await groupHiddenActivityIds(db, access);
+  const list = rows.filter(
+    (r) => r.id === access.activity.id || (!groupHidden.has(r.id) && (showHidden || (r.visible && r.sectionVisible))),
+  );
   const index = list.findIndex((r) => r.id === access.activity.id);
   const nav = (r: (typeof list)[number] | undefined): ActivityNavItem | null => (r ? { id: r.id, title: r.title, type: r.type } : null);
   const own = rows.find((r) => r.id === access.activity.id);
@@ -130,7 +156,12 @@ export function activityRoutes(deps: AppDeps) {
       myRole: access.role,
       prev: nav.prev,
       next: nav.next,
+      groups: await activityGroupInfo(db, access),
     };
+    if (access.can('course:viewHidden')) {
+      detail.groupMode = activity.groupMode ?? null;
+      detail.groupRestriction = (await restrictionRefs(db, course.id)).get(activity.id) ?? [];
+    }
 
     if (type === 'resource') {
       const s = settings as ActivitySettingsMap['resource'];
@@ -155,13 +186,19 @@ export function activityRoutes(deps: AppDeps) {
       detail.submission = own ? toSubmission(own, toPublicUser(user), files, activity.dueAt) : null;
       detail.grade = toGrade(grade, activity.maxGrade ?? 0, users);
       if (isStaff) {
-        const students = await db
-          .selectFrom('enrolments')
-          .select('userId')
-          .where('courseId', '=', course.id)
-          .where('role', '=', 'student')
-          .where('status', '=', 'active')
-          .execute();
+        // Only the students whose work the viewer sees (separate groups, group restrictions).
+        const scope = await studentScope(db, access);
+        const students = await whereInScope(
+          db,
+          db
+            .selectFrom('enrolments')
+            .select('userId')
+            .where('courseId', '=', course.id)
+            .where('role', '=', 'student')
+            .where('status', '=', 'active'),
+          'enrolments.userId',
+          scope,
+        ).execute();
         const ids = students.map((s) => s.userId);
         const subs = ids.length
           ? await db
@@ -231,21 +268,19 @@ export function activityRoutes(deps: AppDeps) {
           questionCount > 0 &&
           (!!inProgress || isManager || ((s.attemptsAllowed === 0 || finished < s.attemptsAllowed) && !closed)),
         inProgressAttemptId: inProgress?.id ?? null,
-        ...(access.can('quiz:viewAllAttempts') ? { needsGrading: await countNeedsGrading(db, activity.id) } : {}),
+        ...(access.can('quiz:viewAllAttempts')
+          ? { needsGrading: await countNeedsGrading(db, activity.id, await studentScope(db, access)) }
+          : {}),
       };
       detail.grade = toGrade(grade, activity.maxGrade ?? 0, new Map());
       counts.set(activity.id, questionCount);
     }
 
     if (type === 'forum') {
-      const discussions = await db
-        .selectFrom('discussions')
-        .select([(eb) => eb.fn.countAll().as('n'), (eb) => eb.fn.sum('replyCount').as('replies')])
-        .where('activityId', '=', activity.id)
-        .executeTakeFirst();
-      const n = num(discussions?.n);
-      detail.forum = { discussionCount: n, postCount: n + num(discussions?.replies) };
-      counts.set(activity.id, n);
+      // Only the discussions the viewer can see (separate groups).
+      const n = (await countDiscussions(db, access, [activity])).get(activity.id) ?? { discussions: 0, posts: 0 };
+      detail.forum = { discussionCount: n.discussions, postCount: n.posts };
+      counts.set(activity.id, n.discussions);
     }
 
     detail.meta = activityMeta(activity, counts);
@@ -264,19 +299,22 @@ export function activityRoutes(deps: AppDeps) {
         description: markdownSchema().optional(),
         settings: z.record(z.string(), z.unknown()).optional(),
         dueAt: isoDateSchema.nullable().optional(),
-        maxGrade: z.number().min(0).max(10_000).optional(),
+        maxGrade: z.number().min(0).max(10_000).nullable().optional(),
         completion: z.enum(['none', 'manual', 'auto']).optional(),
         visible: z.boolean().optional(),
         sectionId: z.string().optional(),
+        ...activityGroupsSchema,
       }),
     );
     const def = activityTypes[activity.type];
     const update: Partial<ActivityRow> = { updatedAt: now() };
+    let resourceFileId: string | null = null;
     if (input.title !== undefined) update.title = input.title;
     if (input.description !== undefined) update.description = input.description;
     if (input.completion !== undefined) update.completion = input.completion;
     if (input.visible !== undefined) update.visible = input.visible ? 1 : 0;
     if (input.dueAt !== undefined && (activity.type === 'assignment' || activity.type === 'quiz')) update.dueAt = input.dueAt;
+    if (input.maxGrade === null && !def.optionalGrade) throw badRequest('Enter a maximum grade.');
     if (input.maxGrade !== undefined && def.graded) update.maxGrade = input.maxGrade;
     if (input.sectionId) {
       const section = await db
@@ -295,18 +333,40 @@ export function activityRoutes(deps: AppDeps) {
         const issue = result.error.issues[0];
         throw badRequest(issue ? `${issue.path.map(String).join('.')}: ${issue.message}` : 'Invalid settings');
       }
+      if (def.validate) await def.validate(db, activity.courseId, result.data as never);
       update.settings = JSON.stringify(result.data);
-      if (activity.type === 'resource') {
-        const s = result.data as ActivitySettingsMap['resource'];
-        if (s.fileId)
-          await db.updateTable('files').set({ courseId: activity.courseId, context: 'activity' }).where('id', '=', s.fileId).execute();
-      }
+      if (activity.type === 'resource') resourceFileId = (result.data as ActivitySettingsMap['resource']).fileId ?? null;
     }
-    await db.updateTable('activities').set(update).where('id', '=', activity.id).execute();
+    // All or nothing: a change that is refused (groups that aren't in the course, say) saves none of the other fields,
+    // so an activity is never made visible without the group restriction that came with it.
+    const groupsChanged = await db.transaction().execute(async (trx) => {
+      await trx.updateTable('activities').set(update).where('id', '=', activity.id).execute();
+      if (resourceFileId) {
+        await trx
+          .updateTable('files')
+          .set({ courseId: activity.courseId, context: 'activity', activityId: activity.id })
+          .where('id', '=', resourceFileId)
+          .execute();
+      }
+      return saveActivityGroups(deps, trx, activity, input, user.id);
+    });
+    if (groupsChanged)
+      deps.events.emit('activity.groups.updated', { activityId: activity.id, courseId: activity.courseId, userId: user.id });
     if (input.maxGrade !== undefined && activity.type === 'quiz') {
       // Rescale existing quiz grades to the new maximum.
       const refreshed = await db.selectFrom('activities').selectAll().where('id', '=', activity.id).executeTakeFirstOrThrow();
       await regradeQuiz(deps, refreshed);
+    }
+    if (activity.type === 'lti' && update.maxGrade !== undefined && update.maxGrade !== activity.maxGrade) {
+      // Grades from the tool were scaled to the old maximum when they arrived.
+      const refreshed = await db.selectFrom('activities').selectAll().where('id', '=', activity.id).executeTakeFirstOrThrow();
+      await regradeLtiActivity(deps, refreshed, activity.maxGrade);
+    }
+    if (activity.type === 'package' && (input.maxGrade !== undefined || input.settings)) {
+      // Package grades are attempt scores times the maximum, picked by the grading method: recompute them.
+      const refreshed = await db.selectFrom('activities').selectAll().where('id', '=', activity.id).executeTakeFirstOrThrow();
+      const learners = await db.selectFrom('packageAttempts').select('userId').distinct().where('activityId', '=', activity.id).execute();
+      for (const { userId } of learners) await syncResults(deps, refreshed, userId);
     }
     return c.json({ ok: true });
   });
@@ -325,7 +385,10 @@ export function activityRoutes(deps: AppDeps) {
       const subs = await db.selectFrom('submissions').select('fileIds').where('activityId', '=', activity.id).execute();
       for (const s of subs) fileIds.push(...parseJson<string[]>(s.fileIds, []));
     }
+    // Package files are listed in package_files, which goes with the activity: list them first, delete them after.
+    const packageKeys = activity.type === 'package' ? await packageStorageKeys(db, { activityId: activity.id }) : [];
     await db.deleteFrom('activities').where('id', '=', activity.id).execute();
+    await deleteStoredFiles(deps, packageKeys);
     if (fileIds.length) {
       const files = await db.selectFrom('files').select(['id', 'storageKey']).where('id', 'in', fileIds).execute();
       await db.deleteFrom('files').where('id', 'in', fileIds).execute();
@@ -372,7 +435,11 @@ export function activityRoutes(deps: AppDeps) {
     if (fileIds.length) {
       const owned = await db.selectFrom('files').select('id').where('id', 'in', fileIds).where('ownerId', '=', user.id).execute();
       if (owned.length !== fileIds.length) throw badRequest('One of the attached files could not be found.');
-      await db.updateTable('files').set({ courseId: activity.courseId, context: 'submission' }).where('id', 'in', fileIds).execute();
+      await db
+        .updateTable('files')
+        .set({ courseId: activity.courseId, context: 'submission', activityId: activity.id })
+        .where('id', 'in', fileIds)
+        .execute();
     }
     if (activity.dueAt && Date.now() > Date.parse(activity.dueAt) && !settings.allowLate) {
       throw forbidden('The due date has passed and late submissions are not accepted.');
@@ -425,15 +492,20 @@ export function activityRoutes(deps: AppDeps) {
     const { activity } = access;
     if (activity.type !== 'assignment') throw badRequest('This activity is not an assignment.');
     const { groupId } = readQuery(c, z.object({ groupId: z.string().max(40).optional() }));
-    const group = groupId ? await findVisibleGroup(db, access, groupId) : null;
-    const students = await db
-      .selectFrom('enrolments')
-      .innerJoin('users', 'users.id', 'enrolments.userId')
-      .select(['users.id', 'users.name', 'users.email', 'users.avatarUrl'])
-      .where('enrolments.courseId', '=', activity.courseId)
-      .where('enrolments.role', '=', 'student')
-      .where('enrolments.status', '=', 'active')
-      .$if(!!group, (q) => q.where('enrolments.userId', 'in', groupMemberIds(db, group!.id)))
+    // Separate groups and group restrictions decide whose work the viewer sees; groupId narrows it to one group.
+    const scope = await studentScope(db, access, groupId);
+    const students = await whereInScope(
+      db,
+      db
+        .selectFrom('enrolments')
+        .innerJoin('users', 'users.id', 'enrolments.userId')
+        .select(['users.id', 'users.name', 'users.email', 'users.avatarUrl'])
+        .where('enrolments.courseId', '=', activity.courseId)
+        .where('enrolments.role', '=', 'student')
+        .where('enrolments.status', '=', 'active'),
+      'enrolments.userId',
+      scope,
+    )
       .orderBy('users.name', 'asc')
       .execute();
     const subs = await db.selectFrom('submissions').selectAll().where('activityId', '=', activity.id).execute();
@@ -482,6 +554,7 @@ export function activityRoutes(deps: AppDeps) {
       .where('role', '=', 'student')
       .executeTakeFirst();
     if (!student) throw notFound('Student');
+    await assertGradable(db, access, student.userId);
     await upsertGrade(deps, {
       activityId: activity.id,
       courseId: course.id,

@@ -137,14 +137,20 @@ describe('managing groups', () => {
     expect((await school.teacher.get(`${base}/participants?groupId=${foreign.body.id}`)).status).toBe(404);
   });
 
-  it('lets teaching assistants manage groups', async () => {
+  it('lets teaching assistants see every group, but only teachers change them', async () => {
+    const id = await createGroup('Teacher group');
     const participants = await school.teacher.get<Participant[]>(`${base}/participants`);
     const kim = participants.body.find((p) => p.user.id === ids.kim)!;
     await school.teacher.patch(`${base}/participants/${kim.enrolmentId}`, { role: 'assistant' });
     const course = await school.kim.get(base);
-    expect(course.body.capabilities).toContain('course:manageGroups');
-    const id = await createGroup('Assistant group', school.kim);
-    expect((await school.kim.post(`${base}/groups/${id}/members`, { userIds: [ids.sam] })).body.added).toEqual([ids.sam]);
+    expect(course.body.capabilities).not.toContain('course:manageGroups');
+    const list = await school.kim.get(`${base}/groups`);
+    expect(list.body.canManage).toBe(false);
+    expect(list.body.groups.map((g: { id: string }) => g.id)).toContain(id);
+    const refused = await school.kim.post(`${base}/groups`, { name: 'Assistant group' });
+    expect(refused.status).toBe(403);
+    expect(refused.body.error.message).toBe('Only teachers can change groups.');
+    expect((await school.kim.post(`${base}/groups/${id}/members`, { userIds: [ids.sam] })).status).toBe(403);
   });
 
   it('lets administrators manage groups in any course', async () => {
@@ -351,7 +357,7 @@ describe('demo content', () => {
       const list = await maya.get<CourseGroups>('/api/courses/modern-web-development/groups');
       expect(list.body.groups.map((g) => [g.name, g.members.length])).toEqual([
         ['Accessibility reviewers', 4],
-        ['Team Aurora', 6],
+        ['Team Aurora', 7], // six students and Priya, the teaching assistant (demo-group-modes.ts)
         ['Team Borealis', 6],
       ]);
 

@@ -12,6 +12,7 @@ import { useDebounced } from '@/lib/hooks';
 import { cn, plural } from '@/lib/utils';
 import { CategorySelect, TypeIcon, useCategories } from './bank';
 import { formatMark, QUESTION_TYPES, subtree, TYPE_META } from './meta';
+import { useSharedCategories } from './transfer';
 
 const PAGE_SIZE = 25;
 
@@ -30,6 +31,7 @@ export function BankPickerDialog({
   onAdd: (questions: BankQuestionSummary[]) => void;
 }) {
   const categories = useCategories(courseId, open);
+  const shared = useSharedCategories(courseId, open);
   const [categoryId, setCategoryId] = useState('');
   const [search, setSearch] = useState('');
   const term = useDebounced(search.trim(), 250);
@@ -84,6 +86,7 @@ export function BankPickerDialog({
           </div>
           <CategorySelect
             categories={categories.data ?? []}
+            shared={shared.data}
             allLabel="All categories"
             value={categoryId}
             onChange={(e) => setCategoryId(e.target.value)}
@@ -132,6 +135,7 @@ export function BankPickerDialog({
                       <span className="block text-sm font-medium break-words">{q.name || q.excerpt}</span>
                       <span className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
                         {TYPE_META[q.type].short} · {q.categoryName} · {formatMark(q.points)} mark{q.points === 1 ? '' : 's'}
+                        {q.sharedFrom && <Badge variant="violet">Shared from {q.sharedFrom.courseTitle}</Badge>}
                         {already && <Badge variant="info">In this quiz</Badge>}
                       </span>
                     </label>
@@ -177,7 +181,7 @@ export function BankPickerDialog({
 }
 
 export interface RandomSlotInput {
-  category: { id: string; name: string };
+  category: { id: string; name: string; sharedFrom?: { courseId: string; courseTitle: string } };
   questionCount: number;
   includeSubcategories: boolean;
   points: number;
@@ -200,7 +204,9 @@ export function RandomSlotDialog({
   onAdd: (slot: RandomSlotInput) => void;
 }) {
   const categories = useCategories(courseId, open);
-  const cats = useMemo(() => categories.data ?? [], [categories.data]);
+  const shared = useSharedCategories(courseId, open);
+  const own = useMemo(() => categories.data ?? [], [categories.data]);
+  const cats = useMemo(() => [...own, ...(shared.data ?? [])], [own, shared.data]);
   const [categoryId, setCategoryId] = useState('');
   const [includeSub, setIncludeSub] = useState(false);
   const [count, setCount] = useState('1');
@@ -231,8 +237,9 @@ export function RandomSlotDialog({
           onSubmit={(e) => {
             e.preventDefault();
             const category = cats.find((c) => c.id === categoryId)!;
+            const from = shared.data?.find((c) => c.id === categoryId)?.sharedFrom;
             onAdd({
-              category: { id: category.id, name: category.name },
+              category: { id: category.id, name: category.name, ...(from ? { sharedFrom: from } : {}) },
               questionCount: n,
               includeSubcategories: includeSub && hasChildren,
               points: Number(points),
@@ -252,7 +259,15 @@ export function RandomSlotDialog({
             ) : (
               <>
                 <Field label="Category">
-                  {(p) => <CategorySelect {...p} categories={cats} value={categoryId} onChange={(e) => setCategoryId(e.target.value)} />}
+                  {(p) => (
+                    <CategorySelect
+                      {...p}
+                      categories={own}
+                      shared={shared.data}
+                      value={categoryId}
+                      onChange={(e) => setCategoryId(e.target.value)}
+                    />
+                  )}
                 </Field>
                 {hasChildren && <SwitchField label="Include subcategories" checked={includeSub} onCheckedChange={setIncludeSub} />}
                 <div className="grid grid-cols-2 gap-3">

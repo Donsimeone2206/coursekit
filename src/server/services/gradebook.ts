@@ -5,6 +5,7 @@ import type { GradeCategoryResult, Gradebook, GradebookItem, GradebookRow, MyGra
 import type { DB } from '../db/types.js';
 import { round } from '../lib/util.js';
 import { computeCourseGrade, loadGradeSetup, type CategoryTotal, type GradeItemInfo, type GradeSetup } from './course-total.js';
+import { loadAvailability, unavailableActivityIds, type CellState } from './group-modes.js';
 
 export interface GradebookStudent {
   id: string;
@@ -47,30 +48,56 @@ function toCategoryResult(t: CategoryTotal | undefined): GradeCategoryResult {
 
 const average = (values: number[]) => (values.length ? round(values.reduce((a, b) => a + b, 0) / values.length) : null);
 
-/** The staff gradebook: every item (hidden ones too) for the given students. */
-export async function buildCourseGradebook(db: DB, courseId: string, students: GradebookStudent[]): Promise<Gradebook> {
+/**
+ * The staff gradebook: every item (hidden ones too) for the given students. A cell is "not applicable" when the
+ * activity is limited to groups the student isn't in: it shows no grade and doesn't count towards their totals or
+ * the averages. `cell` can also hide cells from the viewer (separate groups); the row's totals are hidden with them.
+ */
+export async function buildCourseGradebook(
+  db: DB,
+  courseId: string,
+  students: GradebookStudent[],
+  options: { cell?: (activityId: string, userId: string) => CellState } = {},
+): Promise<Gradebook> {
   const setup = await loadGradeSetup(db, courseId, { includeHidden: true });
   const items = itemsInCategoryOrder(setup);
   const grades = await db.selectFrom('grades').selectAll().where('courseId', '=', courseId).execute();
   const byKey = new Map(grades.map((g) => [`${g.activityId}:${g.userId}`, g]));
+  const availability = options.cell ? null : await loadAvailability(db, courseId);
+  const stateOf =
+    options.cell ??
+    ((activityId: string, userId: string): CellState => (availability!.isAvailable(activityId, userId) ? 'ok' : 'notApplicable'));
 
   const rows: GradebookRow[] = students.map((s) => {
-    const scores = new Map(setup.items.map((item) => [item.activityId, byKey.get(`${item.activityId}:${s.id}`)?.score ?? null]));
+    const states = new Map(setup.items.map((item) => [item.activityId, stateOf(item.activityId, s.id)]));
+    // Activities that don't apply to the student count as if they weren't there.
+    const scores = new Map(
+      setup.items.map((item) => [
+        item.activityId,
+        states.get(item.activityId) === 'notApplicable' ? null : (byKey.get(`${item.activityId}:${s.id}`)?.score ?? null),
+      ]),
+    );
     const grade = computeCourseGrade(setup, scores);
+    const totalsHidden = [...states.values()].includes('hidden');
     const cells: GradebookRow['cells'] = {};
     for (const item of items) {
+      const state = states.get(item.activityId) ?? 'ok';
       const g = byKey.get(`${item.activityId}:${s.id}`);
-      cells[item.activityId] = { score: g?.score ?? null, feedback: g?.feedback ?? null, dropped: grade.dropped.has(item.activityId) };
+      cells[item.activityId] =
+        state === 'ok'
+          ? { score: g?.score ?? null, feedback: g?.feedback ?? null, dropped: grade.dropped.has(item.activityId) }
+          : { score: null, feedback: null, dropped: false, ...(state === 'notApplicable' ? { notApplicable: true } : { hidden: true }) };
     }
     const categories: GradebookRow['categories'] = {};
-    for (const c of setup.categories) categories[c.id] = toCategoryResult(grade.categories.get(c.id));
+    for (const c of setup.categories) categories[c.id] = toCategoryResult(totalsHidden ? undefined : grade.categories.get(c.id));
     return {
       user: { id: s.id, name: s.name, email: s.email, avatarUrl: s.avatarUrl },
       cells,
-      total: round(grade.earned),
-      max: round(grade.possible),
-      percentage: pct(grade.percentage),
+      total: totalsHidden ? 0 : round(grade.earned),
+      max: totalsHidden ? 0 : round(grade.possible),
+      percentage: totalsHidden ? null : pct(grade.percentage),
       categories,
+      ...(totalsHidden ? { totalsHidden: true } : {}),
     };
   });
 
@@ -93,9 +120,14 @@ export async function buildCourseGradebook(db: DB, courseId: string, students: G
   };
 }
 
-/** A student's own grades. Hidden activities are left out, so they don't count towards the total either. */
+/**
+ * A student's own grades. Hidden activities, and activities limited to groups the student isn't in, are left out,
+ * so they don't count towards the total either.
+ */
 export async function buildStudentGrades(db: DB, courseId: string, userId: string): Promise<MyGrades> {
-  const setup = await loadGradeSetup(db, courseId, { includeHidden: false });
+  const loaded = await loadGradeSetup(db, courseId, { includeHidden: false });
+  const unavailable = await unavailableActivityIds(db, userId, [courseId]);
+  const setup = { ...loaded, items: loaded.items.filter((item) => !unavailable.has(item.activityId)) };
   const grades = await db.selectFrom('grades').selectAll().where('courseId', '=', courseId).where('userId', '=', userId).execute();
   const byActivity = new Map(grades.map((g) => [g.activityId, g]));
   const grade = computeCourseGrade(

@@ -28,6 +28,7 @@ import {
   snapshotFromRow,
   studentQuestion,
 } from '../services/question-types.js';
+import { canManageBank, canReadCategory, manageableCourseIds, sharedCategoryRows, sharedFromMap } from '../services/question-sharing.js';
 
 const id = z.string().max(40);
 const categoryFields = {
@@ -64,6 +65,32 @@ export function questionBankRoutes(deps: AppDeps) {
     const access = await loadCourseAccess(db, requireUser(c), question.courseId);
     if (!access.can('questionbank:manage')) throw notFound('Question');
     return { question, access };
+  }
+
+  /**
+   * Read-only access: the viewer manages the question's bank, or a bank its category is shared with, or a
+   * course whose quiz already uses it (a share that ended leaves those quizzes working).
+   */
+  async function questionReadAccess(c: Parameters<typeof requireUser>[0]) {
+    const user = requireUser(c);
+    const question = await findQuestion(db, c.req.param('questionId')!);
+    const category = await db.selectFrom('questionCategories').selectAll().where('id', '=', question.categoryId).executeTakeFirst();
+    if (!category) throw notFound('Question');
+    if (!(await canReadCategory(db, user, category))) {
+      const managed = await manageableCourseIds(db, user);
+      const used =
+        managed !== 'all' && managed.size > 0
+          ? await db
+              .selectFrom('quizSlots')
+              .innerJoin('activities', 'activities.id', 'quizSlots.activityId')
+              .select('quizSlots.id')
+              .where('quizSlots.questionId', '=', question.id)
+              .where('activities.courseId', 'in', [...managed])
+              .executeTakeFirst()
+          : undefined;
+      if (!used) throw notFound('Question');
+    }
+    return { question, owner: await canManageBank(db, user, question.courseId) };
   }
 
   async function categoryAccess(c: Parameters<typeof requireUser>[0]) {
@@ -126,16 +153,23 @@ export function questionBankRoutes(deps: AppDeps) {
         ...pageSchema,
       }),
     );
-    return c.json(
-      await listQuestions(db, access.course.id, {
-        categoryId: q.categoryId,
-        includeSubcategories: q.subcategories === '1',
-        q: q.q,
-        type: q.type,
-        page: q.page,
-        pageSize: q.pageSize,
-      }),
-    );
+    const filter = {
+      categoryId: q.categoryId,
+      includeSubcategories: q.subcategories === '1',
+      q: q.q,
+      type: q.type,
+      page: q.page,
+      pageSize: q.pageSize,
+    };
+    // A category shared with this course lists its own course's questions (read-only here).
+    const category = q.categoryId
+      ? await db.selectFrom('questionCategories').select(['id', 'courseId']).where('id', '=', q.categoryId).executeTakeFirst()
+      : undefined;
+    if (category && category.courseId !== access.course.id && (await sharedCategoryRows(db, access.course.id)).ids.has(category.id)) {
+      const sharedFrom = await sharedFromMap(db, [category.courseId]);
+      return c.json(await listQuestions(db, category.courseId, filter, { courseId: access.course.id, sharedFrom }));
+    }
+    return c.json(await listQuestions(db, access.course.id, filter));
   });
 
   r.post('/courses/:courseId/questions', async (c) => {
@@ -155,8 +189,9 @@ export function questionBankRoutes(deps: AppDeps) {
   });
 
   r.get('/questions/:questionId', async (c) => {
-    const { question } = await questionAccess(c);
-    return c.json(await toBankQuestion(db, question));
+    const { question, owner } = await questionReadAccess(c);
+    const bank = await toBankQuestion(db, question);
+    return c.json(owner ? bank : { ...bank, usage: [] });
   });
 
   /** Edits a question everywhere it's used. Attempts already started keep the version they began with. */
@@ -184,14 +219,14 @@ export function questionBankRoutes(deps: AppDeps) {
 
   /** The question as a student would see it, freshly shuffled. */
   r.get('/questions/:questionId/preview', async (c) => {
-    const { question } = await questionAccess(c);
+    const { question } = await questionReadAccess(c);
     const snapshot = snapshotFromRow(question);
     return c.json({ question: studentQuestion(snapshot), answer: effectiveAnswer(snapshot, undefined) ?? null });
   });
 
   /** Grades a preview answer: `{ answer }`. Returns the result and the question with its answers. */
   r.post('/questions/:questionId/check', async (c) => {
-    const { question } = await questionAccess(c);
+    const { question } = await questionReadAccess(c);
     const { answer } = await readBody(c, z.object({ answer: answerSchema.default({}) }));
     const snapshot = snapshotFromRow(question);
     return c.json({ result: gradeQuestion(snapshot, answer as AttemptAnswer), question: reviewQuestion(snapshot, true) });

@@ -1,10 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Award, Download, MessageSquareText, Search } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router';
 import { toast } from 'sonner';
 import { usesCategories } from '@shared/grades';
-import type { Gradebook, GradebookItem, MyGrades } from '@shared/types';
+import type { Gradebook, GradebookItem, GroupChoice, MyGrades } from '@shared/types';
 import { ActivityIcon } from '@/components/course';
 import { GroupFilter, useGroupFilter, type GroupFilterState } from '@/components/groups';
 import { Page } from '@/components/layout/shell';
@@ -229,23 +229,42 @@ function GradebookTable({
                       </div>
                     </div>
                   </td>
-                  {book.items.map((item) => (
-                    <td key={item.activityId} className="border-b px-1.5 py-2 text-right group-hover:bg-accent/40">
-                      <GradeCell
-                        courseId={courseId}
-                        item={item}
-                        userId={row.user.id}
-                        score={row.cells[item.activityId]?.score ?? null}
-                        feedback={row.cells[item.activityId]?.feedback ?? null}
-                        editable={editable}
-                        dropped={row.cells[item.activityId]?.dropped}
-                      />
-                    </td>
-                  ))}
+                  {book.items.map((item) => {
+                    const cell = row.cells[item.activityId];
+                    return (
+                      <td key={item.activityId} className="border-b px-1.5 py-2 text-right group-hover:bg-accent/40">
+                        {cell?.notApplicable ? (
+                          <span
+                            className="px-2 text-xs text-muted-foreground"
+                            title="Not applicable: this activity is only for groups this student isn't in"
+                          >
+                            N/A
+                          </span>
+                        ) : cell?.hidden ? (
+                          <span className="px-2 text-muted-foreground/50" title="This student isn't in your groups for this activity">
+                            –<span className="sr-only"> (not in your groups)</span>
+                          </span>
+                        ) : (
+                          <GradeCell
+                            courseId={courseId}
+                            item={item}
+                            userId={row.user.id}
+                            score={cell?.score ?? null}
+                            feedback={cell?.feedback ?? null}
+                            editable={editable}
+                            dropped={cell?.dropped}
+                          />
+                        )}
+                      </td>
+                    );
+                  })}
                   <CategoryTotalCells book={book} row={row} />
-                  <td className="border-b bg-muted/40 px-5 py-2.5 text-right">
+                  <td
+                    className="border-b bg-muted/40 px-5 py-2.5 text-right"
+                    title={row.totalsHidden ? "Some of this student's grades are in groups you can't see" : undefined}
+                  >
                     <span className={cn('font-semibold tabular-nums', tone(row.percentage))}>{formatPercent(row.percentage)}</span>
-                    {book.aggregation !== 'weighted' && (
+                    {book.aggregation !== 'weighted' && !row.totalsHidden && (
                       <span className="block text-xs text-muted-foreground tabular-nums">
                         {formatNumber(row.total)} / {formatNumber(row.max)}
                       </span>
@@ -350,13 +369,18 @@ function MyGradesView({ grades, courseSlug }: { grades: MyGrades; courseSlug: st
 export default function GradesPage() {
   const { course, can } = useCourseContext();
   useTitle(`Grades · ${course.title}`);
-  const groupFilter = useGroupFilter(can('grades:viewAll') ? course.id : undefined);
+  // The groups the viewer may pick come with the gradebook (separate groups: a teaching assistant's own groups).
+  const [choice, setChoice] = useState<GroupChoice | undefined>();
+  const groupFilter = useGroupFilter(can('grades:viewAll') ? course.id : undefined, choice);
   const groupId = groupFilter.groupId;
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['grades', course.id, groupId],
     queryFn: () => api.get<GradesResponse>(`/courses/${course.id}/grades${groupId ? `?groupId=${encodeURIComponent(groupId)}` : ''}`),
     placeholderData: (previous) => previous, // keep the table while another group loads
   });
+  useEffect(() => {
+    if (data?.kind === 'gradebook') setChoice(data.gradebook.groupChoice);
+  }, [data]);
 
   return (
     <Page size="wide">

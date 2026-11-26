@@ -8,8 +8,10 @@ export type CourseRole = 'teacher' | 'assistant' | 'student';
 export type UserStatus = 'active' | 'suspended';
 export type CourseVisibility = 'draft' | 'published' | 'archived';
 export type EnrolmentMethod = 'open' | 'key' | 'invite';
-export type ActivityType = 'lesson' | 'resource' | 'assignment' | 'quiz' | 'forum';
+export type ActivityType = 'lesson' | 'resource' | 'assignment' | 'quiz' | 'forum' | 'lti' | 'package';
 export type CompletionMode = 'none' | 'manual' | 'auto';
+/** Moodle-style group mode: no groups, separate groups (people only see their own groups) or visible groups. */
+export type GroupMode = 'none' | 'separate' | 'visible';
 export type QuestionType = 'single' | 'multiple' | 'truefalse' | 'short' | 'numeric' | 'essay' | 'matching' | 'ordering';
 
 export interface PublicUser {
@@ -89,6 +91,8 @@ export interface CourseDetail extends CourseSummary {
   outlineOnly: boolean;
   /** The viewer's own groups in this course. */
   myGroups?: GroupRef[];
+  /** The course's default group mode; activities can override it. */
+  groupMode?: GroupMode;
 }
 
 export interface Section {
@@ -114,6 +118,10 @@ export interface ActivitySummary {
   completed: boolean;
   /** Short subtitle, e.g. "12 min read" or "8 questions". */
   meta: string | null;
+  /** Staff only: the activity's own group mode (null follows the course). */
+  groupMode?: GroupMode | null;
+  /** Staff only: the groups the activity is limited to. Missing or empty means everyone. */
+  groupRestriction?: GroupRef[];
 }
 
 export interface LessonSettings {
@@ -149,12 +157,40 @@ export interface ForumSettings {
   studentsCanStartDiscussions: boolean;
 }
 
+/** External tool (LTI 1.3). The activity is graded when its maxGrade is set. */
+export interface LtiSettings {
+  toolId: string | null;
+  /** Launch URL on the tool's domain; null uses the tool's URL. */
+  launchUrl: string | null;
+  /** Custom parameters for this activity, added to the tool's own. */
+  custom: Record<string, string>;
+  /** `window`: a launch button that opens a new window; `embed`: a frame in the page. */
+  presentation: 'window' | 'embed';
+  /** resourceId and tag of the activity's line item (Assignment and Grade Services). */
+  lineItemResourceId: string | null;
+  lineItemTag: string | null;
+}
+
+/** SCORM 1.2, SCORM 2004 or xAPI content package (the package itself is uploaded separately). */
+export interface PackageSettings {
+  /** Shown inside the activity page, or opened in a new window. */
+  display: 'embed' | 'window';
+  /** 0 means unlimited. */
+  attemptsAllowed: number;
+  /** Which attempt's score becomes the grade. */
+  gradingMethod: 'highest' | 'last';
+  /** Automatic completion also needs a pass (not just a completed status). */
+  requirePass: boolean;
+}
+
 export interface ActivitySettingsMap {
   lesson: LessonSettings;
   resource: ResourceSettings;
   assignment: AssignmentSettings;
   quiz: QuizSettings;
   forum: ForumSettings;
+  lti: LtiSettings;
+  package: PackageSettings;
 }
 
 export interface ActivityNavItem {
@@ -233,6 +269,24 @@ export interface ActivityDetail<T extends ActivityType = ActivityType> extends A
   submissionStats?: { participants: number; submitted: number; needsGrading: number };
   quiz?: QuizInfo;
   forum?: { discussionCount: number; postCount: number };
+  /** How groups work in this activity for the viewer. */
+  groups?: ActivityGroupInfo;
+}
+
+/** The groups a viewer can pick from in a group picker, and whether "All participants" is one of the choices. */
+export interface GroupChoice {
+  groups: GroupRef[];
+  /** The viewer may look at everyone at once. False in separate groups mode for people who can't access all groups. */
+  allParticipants: boolean;
+}
+
+export interface ActivityGroupInfo extends GroupChoice {
+  /** The group mode in effect: the activity's own, or the course's default. */
+  mode: GroupMode;
+  /** Forums: the groups the viewer can start discussions in. */
+  postGroups: GroupRef[];
+  /** Forums: the viewer can start discussions for all participants. */
+  postToAll: boolean;
 }
 
 export interface QuestionOption {
@@ -318,6 +372,8 @@ export interface Discussion {
   lastPostAt: string;
   replyCount: number;
   excerpt: string;
+  /** The discussion's group in a forum with groups; null is for all participants. */
+  group?: GroupRef | null;
 }
 
 export interface Post {
@@ -338,6 +394,8 @@ export interface DiscussionDetail extends Discussion {
   canModerate: boolean;
   course: CourseRef;
   activityTitle: string;
+  /** Why the viewer can't reply, when it's because of groups. */
+  replyNote?: string | null;
 }
 
 export interface Announcement {
@@ -378,6 +436,10 @@ export interface GradebookCell {
   feedback: string | null;
   /** Left out of the totals by its category's "drop the lowest" rule. */
   dropped: boolean;
+  /** The activity is limited to groups the student isn't in: it doesn't count towards their totals. */
+  notApplicable?: boolean;
+  /** Separate groups: the viewer can't see this student's work in the activity. */
+  hidden?: boolean;
 }
 
 export interface GradebookRow {
@@ -390,6 +452,8 @@ export interface GradebookRow {
   percentage: number | null;
   /** Category subtotals, keyed by category id. */
   categories: Record<string, GradeCategoryResult>;
+  /** Some of this student's grades are hidden from the viewer (separate groups), so their totals are too. */
+  totalsHidden?: boolean;
 }
 
 export interface Gradebook {
@@ -402,6 +466,8 @@ export interface Gradebook {
   categories: GradeCategory[];
   /** Average category subtotal per category id. */
   categoryAverages: Record<string, number | null>;
+  /** The groups the viewer can filter the gradebook by. */
+  groupChoice?: GroupChoice;
 }
 
 export interface MyGrades {
@@ -705,6 +771,8 @@ export interface BankQuestionSummary {
   /** Quizzes that use the question directly. */
   quizCount: number;
   updatedAt: string;
+  /** Set when the question belongs to another course's bank that is shared with this course (read-only here). */
+  sharedFrom?: { courseId: string; courseTitle: string };
 }
 
 export interface QuizSlotInfo {
@@ -715,7 +783,8 @@ export interface QuizSlotInfo {
   /** 1 for a question slot. */
   questionCount: number;
   question: BankQuestionSummary | null;
-  category: { id: string; name: string } | null;
+  /** `sharedFrom`: a category of another course's bank shared with this course. */
+  category: { id: string; name: string; sharedFrom?: { courseId: string; courseTitle: string } } | null;
   includeSubcategories: boolean;
   /** Random slots: questions available to pick from (not already in the quiz). */
   available: number | null;

@@ -1,3 +1,4 @@
+import type { SharedFrom } from '../../shared/question-sharing.js';
 import type { BankQuestion, BankQuestionSummary, Paginated, QuestionCategory, QuestionType, QuestionUsage } from '../../shared/types.js';
 import type { Transaction } from 'kysely';
 import type { DB } from '../db/types.js';
@@ -160,6 +161,15 @@ export async function deleteCategory(db: DB, category: QuestionCategoryRow, move
     await categoryInCourse(db, category.courseId, moveTo);
     if (subtreeIds(all, category.id).includes(moveTo)) throw badRequest('Move the contents to a category outside the one being deleted.');
   }
+  // Random slots of other courses' quizzes (the category was shared with them) must not start drawing from `moveTo`.
+  const elsewhere = await db
+    .selectFrom('quizSlots')
+    .innerJoin('activities', 'activities.id', 'quizSlots.activityId')
+    .select('quizSlots.id')
+    .where('quizSlots.categoryId', '=', category.id)
+    .where('activities.courseId', '!=', category.courseId)
+    .executeTakeFirst();
+  if (elsewhere) throw conflict('Quizzes in other courses pick random questions from this category, so it can’t be deleted.');
   await transact(db, async (trx) => {
     if (moveTo) {
       await trx.updateTable('questions').set({ categoryId: moveTo, updatedAt: now() }).where('categoryId', '=', category.id).execute();
@@ -179,40 +189,62 @@ export interface QuestionFilter {
   pageSize: number;
 }
 
-/** Number of quizzes that use each question directly. */
-async function quizCounts(db: DB, ids: string[]): Promise<Map<string, number>> {
+/** Number of quizzes (of one course, if given) that use each question directly. */
+async function quizCounts(db: DB, ids: string[], courseId?: string): Promise<Map<string, number>> {
   if (ids.length === 0) return new Map();
-  const rows = await db
+  let query = db
     .selectFrom('quizSlots')
-    .select(['questionId', (eb) => eb.fn.count('activityId').distinct().as('n')])
-    .where('questionId', 'in', ids)
-    .groupBy('questionId')
-    .execute();
+    .select(['quizSlots.questionId', (eb) => eb.fn.count('quizSlots.activityId').distinct().as('n')])
+    .where('quizSlots.questionId', 'in', ids);
+  if (courseId) query = query.innerJoin('activities', 'activities.id', 'quizSlots.activityId').where('activities.courseId', '=', courseId);
+  const rows = await query.groupBy('quizSlots.questionId').execute();
   return new Map(rows.map((r) => [r.questionId!, num(r.n)]));
 }
 
-type SummaryRow = Pick<QuestionRow, 'id' | 'type' | 'name' | 'prompt' | 'points' | 'categoryId' | 'updatedAt'>;
+type SummaryRow = Pick<QuestionRow, 'id' | 'type' | 'name' | 'prompt' | 'points' | 'categoryId' | 'updatedAt'> & { courseId?: string };
 
-export async function summarizeQuestions(db: DB, rows: SummaryRow[], categories: QuestionCategoryRow[]): Promise<BankQuestionSummary[]> {
+/** How a course sees bank questions: quiz counts of its own quizzes, and where other courses' questions come from. */
+export interface SummaryView {
+  courseId: string;
+  sharedFrom?: Map<string, SharedFrom>;
+}
+
+export async function summarizeQuestions(
+  db: DB,
+  rows: SummaryRow[],
+  categories: QuestionCategoryRow[],
+  view?: SummaryView,
+): Promise<BankQuestionSummary[]> {
   const counts = await quizCounts(
     db,
     rows.map((r) => r.id),
+    view?.courseId,
   );
   const names = new Map(categories.map((c) => [c.id, c.name]));
-  return rows.map((r) => ({
-    id: r.id,
-    type: r.type,
-    name: r.name,
-    excerpt: questionLabel({ prompt: r.prompt }, 160),
-    points: r.points,
-    categoryId: r.categoryId,
-    categoryName: names.get(r.categoryId) ?? '',
-    quizCount: counts.get(r.id) ?? 0,
-    updatedAt: r.updatedAt,
-  }));
+  return rows.map((r) => {
+    const sharedFrom = view && r.courseId && r.courseId !== view.courseId ? view.sharedFrom?.get(r.courseId) : undefined;
+    return {
+      id: r.id,
+      type: r.type,
+      name: r.name,
+      excerpt: questionLabel({ prompt: r.prompt }, 160),
+      points: r.points,
+      categoryId: r.categoryId,
+      categoryName: names.get(r.categoryId) ?? '',
+      quizCount: counts.get(r.id) ?? 0,
+      updatedAt: r.updatedAt,
+      ...(sharedFrom ? { sharedFrom } : {}),
+    };
+  });
 }
 
-export async function listQuestions(db: DB, courseId: string, filter: QuestionFilter): Promise<Paginated<BankQuestionSummary>> {
+/** Lists a bank's questions. `view` is the course looking at them, when the bank is shared with another course. */
+export async function listQuestions(
+  db: DB,
+  courseId: string,
+  filter: QuestionFilter,
+  view: SummaryView = { courseId },
+): Promise<Paginated<BankQuestionSummary>> {
   const categories = await loadCategories(db, courseId);
   let query = db.selectFrom('questions').where('courseId', '=', courseId);
   if (filter.categoryId) {
@@ -226,14 +258,14 @@ export async function listQuestions(db: DB, courseId: string, filter: QuestionFi
   }
   const totalRow = await query.select((eb) => eb.fn.countAll().as('n')).executeTakeFirst();
   const rows = await query
-    .select(['id', 'type', 'name', 'prompt', 'points', 'categoryId', 'updatedAt'])
+    .select(['id', 'type', 'name', 'prompt', 'points', 'categoryId', 'courseId', 'updatedAt'])
     .orderBy('createdAt', 'desc')
     .orderBy('id', 'desc')
     .limit(filter.pageSize)
     .offset((filter.page - 1) * filter.pageSize)
     .execute();
   return {
-    items: await summarizeQuestions(db, rows, categories),
+    items: await summarizeQuestions(db, rows, categories, view),
     total: num(totalRow?.n),
     page: filter.page,
     pageSize: filter.pageSize,
@@ -248,6 +280,8 @@ export async function questionUsage(db: DB, question: Pick<QuestionRow, 'id' | '
     .selectFrom('quizSlots')
     .innerJoin('activities', 'activities.id', 'quizSlots.activityId')
     .select(['activities.id', 'activities.title', 'quizSlots.kind'])
+    // Only this course's quizzes: courses the question is shared with keep their quiz titles to themselves.
+    .where('activities.courseId', '=', question.courseId)
     .where((eb) =>
       eb.or([
         eb('quizSlots.questionId', '=', question.id),
@@ -355,14 +389,18 @@ export async function moveQuestions(db: DB, courseId: string, ids: string[], cat
 /** Deletes a question that no quiz uses directly. Past attempts keep their snapshot of it. */
 export async function deleteQuestion(db: DB, row: QuestionRow): Promise<void> {
   await transact(db, async (trx) => {
-    const used = await trx
+    const uses = await trx
       .selectFrom('quizSlots')
       .innerJoin('activities', 'activities.id', 'quizSlots.activityId')
-      .select(['activities.title'])
+      .select(['activities.title', 'activities.courseId'])
       .distinct()
       .where('quizSlots.questionId', '=', row.id)
       .orderBy('activities.title')
       .execute();
+    const used = uses.filter((u) => u.courseId === row.courseId);
+    if (uses.length > 0 && used.length === 0) {
+      throw conflict('Quizzes in other courses that this question was shared with use it, so it can’t be deleted.');
+    }
     if (used.length) {
       const titles = used.map((u) => `“${u.title}”`).join(', ');
       throw conflict(`This question is used in ${used.length === 1 ? 'the quiz' : 'these quizzes'} ${titles}. Remove it there first.`);

@@ -59,6 +59,7 @@ export const router = createBrowserRouter([
   { path: '/register', element: <RegisterPage />, errorElement: <RouteError /> },
   { path: '/unsubscribe', element: page(() => import('./pages/UnsubscribePage')), errorElement: <RouteError /> },
   { path: '/verify/:code?', element: page(() => import('./pages/VerifyCertificatePage')), errorElement: <RouteError /> },
+  { path: '/verify-badge/:shareId', element: page(() => import('./pages/VerifySharedBadgePage')), errorElement: <RouteError /> },
   {
     path: '/certificates/:certificateId',
     element: <RequireAuth>{page(() => import('./pages/CertificatePage'))}</RequireAuth>,
@@ -114,6 +115,8 @@ export const router = createBrowserRouter([
           { path: 'settings', element: page(() => import('./pages/admin/AdminSettingsPage')) },
           { path: 'email', element: page(() => import('./pages/admin/AdminEmailPage')) },
           { path: 'badges', element: page(() => import('./pages/admin/AdminBadgesPage')) },
+          { path: 'external-tools', element: page(() => import('./pages/admin/AdminLtiPage'), 'AdminLtiToolsPage') },
+          { path: 'external-tools/:toolId', element: page(() => import('./pages/admin/AdminLtiPage'), 'AdminLtiToolPage') },
         ],
       },
       { path: '*', element: page(() => import('./pages/NotFoundPage')) },

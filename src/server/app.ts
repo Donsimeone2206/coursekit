@@ -12,6 +12,8 @@ import type { ApiErrorBody } from '../shared/types.js';
 import { sessionMiddleware } from './auth/session.js';
 import type { AppDeps, AppEnv } from './context.js';
 import { ApiError } from './lib/http.js';
+import { packageContentRoutes, packageHeaderOverrides } from './packages/content-routes.js';
+import { xapiRoutes } from './packages/xapi.js';
 import { activityRoutes } from './routes/activities.js';
 import { adminRoutes } from './routes/admin.js';
 import { authRoutes } from './routes/auth.js';
@@ -27,9 +29,13 @@ import { fileRoutes } from './routes/files.js';
 import { forumRoutes } from './routes/forums.js';
 import { gradeCategoryRoutes } from './routes/grade-categories.js';
 import { gradeRoutes } from './routes/grades.js';
+import { ltiRoutes } from './routes/lti.js';
 import { groupRoutes } from './routes/groups.js';
 import { meRoutes } from './routes/me.js';
+import { openBadgeRoutes } from './routes/open-badges.js';
+import { packageRoutes } from './routes/packages.js';
 import { questionBankRoutes } from './routes/question-bank.js';
+import { questionSharingRoutes } from './routes/question-sharing.js';
 import { quizRoutes } from './routes/quizzes.js';
 
 const JSON_LIMIT = 5 * 1024 * 1024;
@@ -61,12 +67,16 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
 
   app.notFound((c) => c.json(errorBody('Not found.', 'not_found'), 404));
 
+  // Package content (/content/*) and the xAPI LRS (/xapi/*) relax X-Frame-Options and CORP; see content-routes.ts.
+  app.use('*', packageHeaderOverrides());
   app.use(
     '*',
     secureHeaders({
       crossOriginEmbedderPolicy: false,
       crossOriginResourcePolicy: 'same-origin',
       referrerPolicy: 'strict-origin-when-cross-origin',
+      // Keep a header a route set itself (e.g. Cross-Origin-Resource-Policy on the public /openbadges/ documents).
+      overwrite: false,
     }),
   );
   if (deps.config.logRequests) app.use('/api/*', logger());
@@ -105,10 +115,19 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
   app.route('/api', meRoutes(deps));
   // /api/email/*, /api/admin/email/* and the one-click POST /unsubscribe (outside /api: mail providers send no Origin)
   app.route('/', emailRoutes(deps));
+  // Public Open Badges documents under /openbadges/ (CORS, embeddable), plus the sharing and issuer APIs under /api
+  app.route('/', openBadgeRoutes(deps));
+  // /api/admin/lti/*, /api/courses/:id/lti/tools, /api/lti/* and the LTI 1.3 endpoints under /lti (tools post to them from other sites)
+  app.route('/', ltiRoutes(deps));
+  // Sandboxed SCORM/xAPI package content (/content/<token>/...) and the xAPI LRS (/xapi/...): token auth, no cookies.
+  app.route('/', packageContentRoutes(deps));
+  app.route('/', xapiRoutes(deps));
   app.route('/api/courses', completionRoutes(deps));
   app.route('/api', certificateRoutes(deps));
   app.route('/api', badgeRoutes(deps));
   app.route('/api', questionBankRoutes(deps));
+  app.route('/api', packageRoutes(deps));
+  app.route('/api', questionSharingRoutes(deps));
   app.all('/api/*', (c) => c.json(errorBody('Not found.', 'not_found'), 404));
 
   if (deps.config.webDir) {

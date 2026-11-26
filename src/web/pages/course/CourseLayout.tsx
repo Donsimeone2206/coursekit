@@ -286,7 +286,12 @@ export default function CourseLayout() {
     { to: '', label: 'Course', icon: BookOpen, end: true },
     { to: 'announcements', label: 'Announcements', icon: Megaphone },
     { to: 'participants', label: 'Participants', icon: Users, show: can('course:viewParticipants') },
-    { to: 'groups', label: 'Groups', icon: UsersRound, show: can('course:manageGroups') || !!course.myGroups?.length },
+    {
+      to: 'groups',
+      label: 'Groups',
+      icon: UsersRound,
+      show: can('course:manageGroups') || can('grades:viewAll') || !!course.myGroups?.length,
+    },
     { to: 'grades', label: 'Grades', icon: Award },
     { to: 'completion', label: 'Completion', icon: Flag, show: can('completion:viewReport') },
     { to: 'badges', label: 'Badges', icon: Medal },

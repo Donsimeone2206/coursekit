@@ -8,24 +8,29 @@ import { badRequest, notFound, readBody, readQuery } from '../lib/http.js';
 import { assertCan, loadCourseAccess, type CourseAccess } from '../services/access.js';
 import { buildCourseGradebook, buildStudentGrades } from '../services/gradebook.js';
 import { upsertGrade } from '../services/grades.js';
-import { findVisibleGroup, groupMemberIds } from '../services/groups.js';
+import { gradebookScope, whereInScope } from '../services/group-modes.js';
 import { notify } from '../services/notify.js';
 
 /** Grade items, categories and totals come from services/gradebook.ts (course totals: services/course-total.ts). */
 async function buildGradebook(db: DB, access: CourseAccess, groupId?: string): Promise<Gradebook> {
-  // With a group, rows and averages cover only its members.
-  const group = groupId ? await findVisibleGroup(db, access, groupId) : null;
-  const students = await db
-    .selectFrom('enrolments')
-    .innerJoin('users', 'users.id', 'enrolments.userId')
-    .select(['users.id', 'users.name', 'users.email', 'users.avatarUrl'])
-    .where('enrolments.courseId', '=', access.course.id)
-    .where('enrolments.role', '=', 'student')
-    .where('enrolments.status', '=', 'active')
-    .$if(!!group, (q) => q.where('enrolments.userId', 'in', groupMemberIds(db, group!.id)))
+  // With a group, rows and averages cover only its members. Group modes decide which rows and cells the viewer sees.
+  const scope = await gradebookScope(db, access, groupId);
+  const students = await whereInScope(
+    db,
+    db
+      .selectFrom('enrolments')
+      .innerJoin('users', 'users.id', 'enrolments.userId')
+      .select(['users.id', 'users.name', 'users.email', 'users.avatarUrl'])
+      .where('enrolments.courseId', '=', access.course.id)
+      .where('enrolments.role', '=', 'student')
+      .where('enrolments.status', '=', 'active'),
+    'enrolments.userId',
+    { groupIds: scope.groupIds, restrictedTo: null },
+  )
     .orderBy('users.name', 'asc')
     .execute();
-  return buildCourseGradebook(db, access.course.id, students);
+  const book = await buildCourseGradebook(db, access.course.id, students, { cell: scope.cell });
+  return { ...book, groupChoice: scope.choice };
 }
 
 const groupQuery = z.object({ groupId: z.string().max(40).optional() });
@@ -73,9 +78,12 @@ export function gradeRoutes(deps: AppDeps) {
         [
           row.user.name,
           row.user.email,
-          ...book.items.map((i) => row.cells[i.activityId]?.score ?? ''),
+          ...book.items.map((i) => {
+            const cell = row.cells[i.activityId];
+            return cell?.notApplicable ? 'N/A' : (cell?.score ?? '');
+          }),
           ...groups.map((g) => row.categories[g.id]?.percentage ?? ''),
-          row.total,
+          row.totalsHidden ? '' : row.total,
           row.percentage ?? '',
         ]
           .map(csvCell)
@@ -112,6 +120,12 @@ export function gradeRoutes(deps: AppDeps) {
       .where('role', '=', 'student')
       .executeTakeFirst();
     if (!student) throw notFound('Student');
+    // Group modes: only students whose work the viewer sees, and only activities that apply to the student.
+    const state = (await gradebookScope(db, access)).cell(activity.id, student.userId);
+    if (state === 'hidden') throw notFound('Student');
+    if (state === 'notApplicable') {
+      throw badRequest("This activity is limited to groups this student isn't in, so it can't be graded for them.");
+    }
 
     await upsertGrade(deps, {
       activityId: activity.id,

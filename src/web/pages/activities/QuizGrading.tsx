@@ -1,7 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
 import { ClipboardCheck } from 'lucide-react';
+import { useState } from 'react';
 import { Link } from 'react-router';
 import type { ActivityDetail, QuizGradingItem } from '@shared/types';
+import { GroupPicker } from '@/components/group-modes';
 import { Avatar } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -12,9 +14,12 @@ import { formatRelative, plural } from '@/lib/utils';
 
 /** Students' attempts whose essays wait for a mark (staff). */
 export function NeedsGradingCard({ activity }: { activity: ActivityDetail<'quiz'> }) {
+  const [groupId, setGroupId] = useState('');
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ['grading', activity.id],
-    queryFn: () => api.get<QuizGradingItem[]>(`/activities/${activity.id}/grading`),
+    queryKey: ['grading', activity.id, groupId],
+    queryFn: () =>
+      api.get<QuizGradingItem[]>(`/activities/${activity.id}/grading${groupId ? `?groupId=${encodeURIComponent(groupId)}` : ''}`),
+    placeholderData: (previous) => previous,
   });
   return (
     <Card className="border-amber-500/30">
@@ -24,6 +29,11 @@ export function NeedsGradingCard({ activity }: { activity: ActivityDetail<'quiz'
         icon={<ClipboardCheck className="size-4.5" />}
         action={data && <Badge variant="warning">{data.length}</Badge>}
       />
+      {activity.groups && activity.groups.groups.length > 0 && (
+        <div className="px-5 pb-3">
+          <GroupPicker choice={activity.groups} value={groupId} onChange={setGroupId} className="sm:w-full" />
+        </div>
+      )}
       {error ? (
         <div className="px-5 pb-5">
           <ErrorState error={error} onRetry={() => refetch()} />

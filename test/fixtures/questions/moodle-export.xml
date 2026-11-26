@@ -1,0 +1,449 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<quiz>
+<!-- question: 0  -->
+  <question type="category">
+    <category>
+      <text>$course$/top/Default for BIO101</text>
+    </category>
+    <info format="moodle_auto_format">
+      <text>The default category for questions shared in context 'BIO101'.</text>
+    </info>
+    <idnumber></idnumber>
+  </question>
+
+<!-- question: 0  -->
+  <question type="category">
+    <category>
+      <text>$course$/top/Default for BIO101/Cells &amp; tissues</text>
+    </category>
+    <info format="html">
+      <text><![CDATA[<p>Questions about <strong>cells</strong>.</p>]]></text>
+    </info>
+    <idnumber></idnumber>
+  </question>
+
+<!-- question: 101  -->
+  <question type="multichoice">
+    <name>
+      <text>Powerhouse of the cell</text>
+    </name>
+    <questiontext format="html">
+      <text><![CDATA[<p dir="ltr" style="text-align: left;">Which organelle is known as the <strong>powerhouse</strong> of the cell?</p><p><img src="@@PLUGINFILE@@/cell.png" alt="A cell" width="300" height="200" class="img-fluid"></p>]]></text>
+      <file name="cell.png" path="/" encoding="base64">iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==</file>
+    </questiontext>
+    <generalfeedback format="html">
+      <text><![CDATA[<p>Mitochondria make most of the cell's ATP.</p>]]></text>
+    </generalfeedback>
+    <defaultgrade>2.0000000</defaultgrade>
+    <penalty>0.3333333</penalty>
+    <hidden>0</hidden>
+    <idnumber></idnumber>
+    <single>true</single>
+    <shuffleanswers>true</shuffleanswers>
+    <answernumbering>abc</answernumbering>
+    <showstandardinstruction>0</showstandardinstruction>
+    <correctfeedback format="html">
+      <text>Your answer is correct.</text>
+    </correctfeedback>
+    <partiallycorrectfeedback format="html">
+      <text>Your answer is partially correct.</text>
+    </partiallycorrectfeedback>
+    <incorrectfeedback format="html">
+      <text>Your answer is incorrect.</text>
+    </incorrectfeedback>
+    <shownumcorrect/>
+    <answer fraction="100" format="html">
+      <text><![CDATA[<p>Mitochondrion</p>]]></text>
+      <feedback format="html">
+        <text><![CDATA[<p>Yes!</p>]]></text>
+      </feedback>
+    </answer>
+    <answer fraction="0" format="html">
+      <text><![CDATA[<p>Nucleus</p>]]></text>
+      <feedback format="html">
+        <text></text>
+      </feedback>
+    </answer>
+    <answer fraction="0" format="html">
+      <text><![CDATA[<p>Ribosome</p>]]></text>
+      <feedback format="html">
+        <text></text>
+      </feedback>
+    </answer>
+  </question>
+
+<!-- question: 102  -->
+  <question type="multichoice">
+    <name>
+      <text>Cell parts</text>
+    </name>
+    <questiontext format="html">
+      <text><![CDATA[<p>Select <em>all</em> the parts found in <u>plant</u> cells:</p>
+<ul>
+<li>think about walls</li>
+<li>and about light</li>
+</ul>]]></text>
+    </questiontext>
+    <generalfeedback format="html">
+      <text></text>
+    </generalfeedback>
+    <defaultgrade>1.0000000</defaultgrade>
+    <penalty>0.3333333</penalty>
+    <hidden>0</hidden>
+    <idnumber></idnumber>
+    <single>false</single>
+    <shuffleanswers>true</shuffleanswers>
+    <answernumbering>abc</answernumbering>
+    <showstandardinstruction>0</showstandardinstruction>
+    <correctfeedback format="html">
+      <text>Your answer is correct.</text>
+    </correctfeedback>
+    <partiallycorrectfeedback format="html">
+      <text>Your answer is partially correct.</text>
+    </partiallycorrectfeedback>
+    <incorrectfeedback format="html">
+      <text>Your answer is incorrect.</text>
+    </incorrectfeedback>
+    <shownumcorrect/>
+    <answer fraction="50" format="html">
+      <text>Cell wall</text>
+      <feedback format="html">
+        <text></text>
+      </feedback>
+    </answer>
+    <answer fraction="50" format="html">
+      <text>Chloroplast</text>
+      <feedback format="html">
+        <text></text>
+      </feedback>
+    </answer>
+    <answer fraction="-100" format="html">
+      <text>Centriole</text>
+      <feedback format="html">
+        <text></text>
+      </feedback>
+    </answer>
+  </question>
+
+<!-- question: 0  -->
+  <question type="category">
+    <category>
+      <text>$course$/top/Default for BIO101/Genetics</text>
+    </category>
+    <info format="moodle_auto_format">
+      <text></text>
+    </info>
+    <idnumber></idnumber>
+  </question>
+
+<!-- question: 103  -->
+  <question type="truefalse">
+    <name>
+      <text>DNA strands</text>
+    </name>
+    <questiontext format="moodle_auto_format">
+      <text>DNA is made of two strands.
+They wind around each other.</text>
+    </questiontext>
+    <generalfeedback format="moodle_auto_format">
+      <text></text>
+    </generalfeedback>
+    <defaultgrade>1.0000000</defaultgrade>
+    <penalty>1.0000000</penalty>
+    <hidden>0</hidden>
+    <idnumber></idnumber>
+    <answer fraction="100" format="moodle_auto_format">
+      <text>true</text>
+      <feedback format="html">
+        <text></text>
+      </feedback>
+    </answer>
+    <answer fraction="0" format="moodle_auto_format">
+      <text>false</text>
+      <feedback format="html">
+        <text></text>
+      </feedback>
+    </answer>
+  </question>
+
+<!-- question: 104  -->
+  <question type="shortanswer">
+    <name>
+      <text>Base pairs</text>
+    </name>
+    <questiontext format="plain_text">
+      <text>Which base pairs with adenine in DNA? (one word, e.g. *cytosine*)</text>
+    </questiontext>
+    <generalfeedback format="html">
+      <text></text>
+    </generalfeedback>
+    <defaultgrade>1.0000000</defaultgrade>
+    <penalty>0.3333333</penalty>
+    <hidden>0</hidden>
+    <idnumber></idnumber>
+    <usecase>1</usecase>
+    <answer fraction="100" format="moodle_auto_format">
+      <text>Thymine</text>
+      <feedback format="html">
+        <text></text>
+      </feedback>
+    </answer>
+    <answer fraction="100" format="moodle_auto_format">
+      <text>T</text>
+      <feedback format="html">
+        <text></text>
+      </feedback>
+    </answer>
+    <answer fraction="50" format="moodle_auto_format">
+      <text>Uracil</text>
+      <feedback format="html">
+        <text><![CDATA[<p>That's RNA.</p>]]></text>
+      </feedback>
+    </answer>
+  </question>
+
+<!-- question: 105  -->
+  <question type="numerical">
+    <name>
+      <text>Chromosomes</text>
+    </name>
+    <questiontext format="markdown">
+      <text>How many chromosomes does a typical **human** cell have?</text>
+    </questiontext>
+    <generalfeedback format="markdown">
+      <text>23 pairs.</text>
+    </generalfeedback>
+    <defaultgrade>1.0000000</defaultgrade>
+    <penalty>0.3333333</penalty>
+    <hidden>0</hidden>
+    <idnumber></idnumber>
+    <answer fraction="100" format="moodle_auto_format">
+      <text>46</text>
+      <feedback format="html">
+        <text></text>
+      </feedback>
+      <tolerance>0</tolerance>
+    </answer>
+    <answer fraction="0" format="moodle_auto_format">
+      <text>*</text>
+      <feedback format="html">
+        <text><![CDATA[<p>Count the pairs.</p>]]></text>
+      </feedback>
+      <tolerance>0</tolerance>
+    </answer>
+    <units>
+      <unit>
+        <multiplier>1</multiplier>
+        <unit_name>chromosomes</unit_name>
+      </unit>
+    </units>
+    <unitgradingtype>0</unitgradingtype>
+    <unitpenalty>0.1000000</unitpenalty>
+    <showunits>3</showunits>
+    <unitsleft>0</unitsleft>
+  </question>
+
+<!-- question: 106  -->
+  <question type="essay">
+    <name>
+      <text>Evolution essay</text>
+    </name>
+    <questiontext format="html">
+      <text><![CDATA[<h3>Natural selection</h3><p>Explain natural selection in your own words.</p>]]></text>
+    </questiontext>
+    <generalfeedback format="html">
+      <text></text>
+    </generalfeedback>
+    <defaultgrade>10.0000000</defaultgrade>
+    <penalty>0.0000000</penalty>
+    <hidden>0</hidden>
+    <idnumber></idnumber>
+    <responseformat>editor</responseformat>
+    <responserequired>1</responserequired>
+    <responsefieldlines>15</responsefieldlines>
+    <minwordlimit>100</minwordlimit>
+    <maxwordlimit>400</maxwordlimit>
+    <attachments>0</attachments>
+    <attachmentsrequired>0</attachmentsrequired>
+    <maxbytes>0</maxbytes>
+    <filetypeslist></filetypeslist>
+    <graderinfo format="html">
+      <text><![CDATA[<p>Look for <b>variation</b>, inheritance and selection.</p>]]></text>
+    </graderinfo>
+    <responsetemplate format="html">
+      <text></text>
+    </responsetemplate>
+  </question>
+
+<!-- question: 107  -->
+  <question type="matching">
+    <name>
+      <text>Match the scientists</text>
+    </name>
+    <questiontext format="html">
+      <text><![CDATA[<p>Match each scientist to their discovery.</p>]]></text>
+    </questiontext>
+    <generalfeedback format="html">
+      <text></text>
+    </generalfeedback>
+    <defaultgrade>3.0000000</defaultgrade>
+    <penalty>0.3333333</penalty>
+    <hidden>0</hidden>
+    <idnumber></idnumber>
+    <shuffleanswers>true</shuffleanswers>
+    <correctfeedback format="html">
+      <text>Your answer is correct.</text>
+    </correctfeedback>
+    <partiallycorrectfeedback format="html">
+      <text>Your answer is partially correct.</text>
+    </partiallycorrectfeedback>
+    <incorrectfeedback format="html">
+      <text>Your answer is incorrect.</text>
+    </incorrectfeedback>
+    <shownumcorrect/>
+    <subquestion format="html">
+      <text><![CDATA[<p>Mendel</p>]]></text>
+      <answer>
+        <text>Inheritance</text>
+      </answer>
+    </subquestion>
+    <subquestion format="html">
+      <text><![CDATA[<p>Darwin</p>]]></text>
+      <answer>
+        <text>Natural selection</text>
+      </answer>
+    </subquestion>
+    <subquestion format="html">
+      <text><![CDATA[<p>Franklin</p>]]></text>
+      <answer>
+        <text>DNA structure</text>
+      </answer>
+    </subquestion>
+    <subquestion format="html">
+      <text></text>
+      <answer>
+        <text>Germ theory</text>
+      </answer>
+    </subquestion>
+  </question>
+
+<!-- question: 108  -->
+  <question type="ordering">
+    <name>
+      <text>Mitosis phases</text>
+    </name>
+    <questiontext format="html">
+      <text><![CDATA[<p>Put the phases of mitosis in order.</p>]]></text>
+    </questiontext>
+    <generalfeedback format="html">
+      <text></text>
+    </generalfeedback>
+    <defaultgrade>4.0000000</defaultgrade>
+    <penalty>0.3333333</penalty>
+    <hidden>0</hidden>
+    <idnumber></idnumber>
+    <layouttype>VERTICAL</layouttype>
+    <selecttype>ALL</selecttype>
+    <selectcount>0</selectcount>
+    <gradingtype>ABSOLUTE_POSITION</gradingtype>
+    <showgrading>SHOW</showgrading>
+    <numberingstyle>none</numberingstyle>
+    <correctfeedback format="html">
+      <text>Your answer is correct.</text>
+    </correctfeedback>
+    <partiallycorrectfeedback format="html">
+      <text>Your answer is partially correct.</text>
+    </partiallycorrectfeedback>
+    <incorrectfeedback format="html">
+      <text>Your answer is incorrect.</text>
+    </incorrectfeedback>
+    <shownumcorrect/>
+    <answer fraction="2.0000000" format="moodle_auto_format">
+      <text>Metaphase</text>
+    </answer>
+    <answer fraction="1.0000000" format="moodle_auto_format">
+      <text>Prophase</text>
+    </answer>
+    <answer fraction="3.0000000" format="moodle_auto_format">
+      <text>Anaphase</text>
+    </answer>
+    <answer fraction="4.0000000" format="moodle_auto_format">
+      <text>Telophase</text>
+    </answer>
+  </question>
+
+<!-- question: 109  -->
+  <question type="description">
+    <name>
+      <text>Reading</text>
+    </name>
+    <questiontext format="html">
+      <text><![CDATA[<p>Read chapter 4 before answering.</p>]]></text>
+    </questiontext>
+    <generalfeedback format="html">
+      <text></text>
+    </generalfeedback>
+    <defaultgrade>0.0000000</defaultgrade>
+    <penalty>0.0000000</penalty>
+    <hidden>0</hidden>
+    <idnumber></idnumber>
+  </question>
+
+<!-- question: 110  -->
+  <question type="multianswer">
+    <name>
+      <text>Cloze</text>
+    </name>
+    <questiontext format="html">
+      <text><![CDATA[<p>Cells divide by {1:MULTICHOICE:=mitosis~meiosis}.</p>]]></text>
+    </questiontext>
+    <generalfeedback format="html">
+      <text></text>
+    </generalfeedback>
+    <penalty>0.3333333</penalty>
+    <hidden>0</hidden>
+    <idnumber></idnumber>
+  </question>
+
+<!-- question: 111  -->
+  <question type="calculated">
+    <name>
+      <text>Growth rate</text>
+    </name>
+    <questiontext format="html">
+      <text><![CDATA[<p>A culture doubles every {t} hours...</p>]]></text>
+    </questiontext>
+    <generalfeedback format="html">
+      <text></text>
+    </generalfeedback>
+    <defaultgrade>1.0000000</defaultgrade>
+    <penalty>0.3333333</penalty>
+    <hidden>0</hidden>
+    <idnumber></idnumber>
+  </question>
+
+<!-- question: 112  -->
+  <question type="multichoice">
+    <name>
+      <text>Broken choice</text>
+    </name>
+    <questiontext format="html">
+      <text><![CDATA[<p>This question has no right answer.</p>]]></text>
+    </questiontext>
+    <generalfeedback format="html">
+      <text></text>
+    </generalfeedback>
+    <defaultgrade>1.0000000</defaultgrade>
+    <penalty>0.3333333</penalty>
+    <hidden>0</hidden>
+    <idnumber></idnumber>
+    <single>true</single>
+    <answer fraction="0" format="html">
+      <text>One</text>
+    </answer>
+    <answer fraction="0" format="html">
+      <text>Two</text>
+    </answer>
+  </question>
+
+</quiz>

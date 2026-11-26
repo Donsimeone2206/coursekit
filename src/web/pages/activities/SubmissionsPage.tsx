@@ -52,7 +52,7 @@ export default function SubmissionsPage() {
   const [selected, setSelected] = useState<string | null>(null);
   const [score, setScore] = useState('');
   const [feedback, setFeedback] = useState('');
-  const groupFilter = useGroupFilter(activity?.course.id);
+  const groupFilter = useGroupFilter(activity?.course.id, activity?.groups);
 
   const filtered = useMemo(
     () =>

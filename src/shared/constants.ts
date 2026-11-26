@@ -5,7 +5,7 @@ export const COVER_COLORS = ['indigo', 'ocean', 'emerald', 'sunset', 'rose', 'am
 
 export type CoverColor = (typeof COVER_COLORS)[number];
 
-export const ACTIVITY_TYPES: readonly ActivityType[] = ['lesson', 'resource', 'assignment', 'quiz', 'forum'];
+export const ACTIVITY_TYPES: readonly ActivityType[] = ['lesson', 'resource', 'assignment', 'quiz', 'forum', 'lti', 'package'];
 
 export const ACTIVITY_LABELS: Record<ActivityType, string> = {
   lesson: 'Lesson',
@@ -13,6 +13,8 @@ export const ACTIVITY_LABELS: Record<ActivityType, string> = {
   assignment: 'Assignment',
   quiz: 'Quiz',
   forum: 'Forum',
+  lti: 'External tool',
+  package: 'SCORM / xAPI package',
 };
 
 export const ACTIVITY_DESCRIPTIONS: Record<ActivityType, string> = {
@@ -21,9 +23,11 @@ export const ACTIVITY_DESCRIPTIONS: Record<ActivityType, string> = {
   assignment: 'Collect text or file submissions and grade them.',
   quiz: 'Auto-graded questions with attempts and review.',
   forum: 'Threaded discussions for the class.',
+  lti: 'Open a learning tool from another site (LTI 1.3), with grades sent back.',
+  package: 'Upload a SCORM 1.2, SCORM 2004 or xAPI (Tin Can) e-learning module.',
 };
 
-export const GRADED_ACTIVITY_TYPES: readonly ActivityType[] = ['assignment', 'quiz'];
+export const GRADED_ACTIVITY_TYPES: readonly ActivityType[] = ['assignment', 'quiz', 'lti', 'package'];
 
 export const DEFAULT_COMPLETION: Record<ActivityType, CompletionMode> = {
   lesson: 'manual',
@@ -31,6 +35,8 @@ export const DEFAULT_COMPLETION: Record<ActivityType, CompletionMode> = {
   assignment: 'auto',
   quiz: 'auto',
   forum: 'none',
+  lti: 'auto',
+  package: 'auto',
 };
 
 export const DEFAULT_SETTINGS: ActivitySettingsMap = {
@@ -46,6 +52,8 @@ export const DEFAULT_SETTINGS: ActivitySettingsMap = {
     passingPercent: null,
   },
   forum: { studentsCanStartDiscussions: true },
+  lti: { toolId: null, launchUrl: null, custom: {}, presentation: 'window', lineItemResourceId: null, lineItemTag: null },
+  package: { display: 'embed', attemptsAllowed: 0, gradingMethod: 'highest', requirePass: false },
 };
 
 export const DEFAULT_BRAND_COLOR = '#4f46e5';

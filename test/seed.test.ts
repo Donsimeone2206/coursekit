@@ -1,8 +1,15 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { expect, it } from 'vitest';
 import { createCoursekit } from '../src/server/index.js';
 
 it('seedDemo without a password returns the one it gave the new administrator', async () => {
-  const lms = await createCoursekit({ databaseUrl: 'sqlite::memory:', webDir: false });
+  const lms = await createCoursekit({
+    databaseUrl: 'sqlite::memory:',
+    webDir: false,
+    dataDir: mkdtempSync(join(tmpdir(), 'coursekit-test-')),
+  });
   try {
     const result = await lms.seedDemo();
     expect(result.created).toBe(true);

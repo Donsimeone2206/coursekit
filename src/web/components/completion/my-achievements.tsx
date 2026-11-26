@@ -1,9 +1,14 @@
 import { useQuery } from '@tanstack/react-query';
-import { ChevronRight, Medal, ScrollText } from 'lucide-react';
+import { ChevronRight, Globe, Medal, ScrollText, Share2 } from 'lucide-react';
+import { useState } from 'react';
 import { Link } from 'react-router';
 import type { CertificateSummary, EarnedBadge } from '@shared/completion';
+import type { MyBadgeShare } from '@shared/open-badges';
+import { BadgeSharePanel, openBadgeKeys } from '@/components/open-badges/share-panel';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Card, CardHeader } from '@/components/ui/card';
+import { Dialog, DialogBody, DialogContent, DialogHeader } from '@/components/ui/dialog';
 import { ErrorState, Skeleton } from '@/components/ui/misc';
 import { achievementKeys } from '@/lib/achievements';
 import { api } from '@/lib/api';
@@ -67,6 +72,9 @@ function Badges() {
     queryKey: achievementKeys.myBadges,
     queryFn: () => api.get<EarnedBadge[]>('/me/badges'),
   });
+  const { data: shares } = useQuery({ queryKey: openBadgeKeys.myShares, queryFn: () => api.get<MyBadgeShare[]>('/me/badge-shares') });
+  const shared = new Set(shares?.map((s) => s.badgeId));
+  const [sharing, setSharing] = useState<EarnedBadge | null>(null);
   return (
     <Card>
       <CardHeader title="Badges" description="Awarded by teachers and for completing courses." icon={<Medal className="size-4.5" />} />
@@ -82,7 +90,7 @@ function Badges() {
         ) : (
           <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3">
             {data.map((b) => (
-              <li key={b.badge.id}>
+              <li key={b.badge.id} className="relative">
                 <Link
                   to={`/badges/${b.badge.id}`}
                   className="flex h-full flex-col items-center rounded-xl border px-3 py-4 text-center transition-colors hover:border-primary/40 hover:bg-accent/40"
@@ -91,12 +99,36 @@ function Badges() {
                   <span className="mt-2 line-clamp-2 text-sm font-medium break-words">{b.badge.name}</span>
                   <span className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">{b.badge.course?.title ?? 'Site badge'}</span>
                   <span className="mt-0.5 text-[11px] text-muted-foreground">{formatDate(b.awardedAt, { year: 'numeric' })}</span>
+                  {shared.has(b.badge.id) && (
+                    <span className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-success">
+                      <Globe className="size-3" /> Shared
+                    </span>
+                  )}
                 </Link>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  className="absolute top-1.5 right-1.5 text-muted-foreground"
+                  aria-label={`Share ${b.badge.name}`}
+                  onClick={() => setSharing(b)}
+                >
+                  <Share2 />
+                </Button>
               </li>
             ))}
           </ul>
         )}
       </div>
+      <Dialog open={!!sharing} onOpenChange={(open) => !open && setSharing(null)}>
+        {sharing && (
+          <DialogContent size="lg">
+            <DialogHeader title={`Share “${sharing.badge.name}”`} icon={<Share2 className="size-5" />} />
+            <DialogBody className="pb-6">
+              <BadgeSharePanel badgeId={sharing.badge.id} />
+            </DialogBody>
+          </DialogContent>
+        )}
+      </Dialog>
     </Card>
   );
 }

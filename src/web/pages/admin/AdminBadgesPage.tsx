@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import type { BadgeSummary } from '@shared/completion';
 import { BadgeCard, BadgeGridSkeleton } from '@/components/completion/badge-card';
 import { BadgeFormDialog } from '@/components/completion/badge-dialog';
+import { OpenBadgesIssuerCard } from '@/components/open-badges/issuer-settings';
 import { Button } from '@/components/ui/button';
 import { useConfirm } from '@/components/ui/confirm';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/menu';
@@ -100,6 +101,7 @@ export default function AdminBadgesPage() {
           ))}
         </div>
       )}
+      <OpenBadgesIssuerCard />
       {editing && (
         <BadgeFormDialog
           open={!!editing}

@@ -119,6 +119,24 @@ Every course has a question bank of questions organised in (optionally nested) c
 
 A question is `{ type, prompt, points, name?, explanation?, … }` where `type` is `single`, `multiple`, `truefalse`, `short`, `numeric`, `essay`, `matching` or `ordering`, plus: `options: [{ text, correct }]` for choice questions; `acceptedAnswers` (and `tolerance` for numerical); `options: [{ text }]` in the right order for ordering; `pairs: [{ text, answer }]` and `distractors: ["…"]` for matching; `minWords`, `maxWords` and `graderNotes` for essays. `points` is the default mark when the question is added to a quiz.
 
+### Question import, export and sharing
+
+All need `questionbank:manage` in the course. Types are in `src/shared/question-sharing.ts`.
+
+| Method | Path                                      | Description                                                                                                                                                                                                                                                |
+| ------ | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| POST   | `/courses/:id/question-import/preview`    | `{ content, filename?, format?: "moodle" \| "gift", categoryId: string \| null, createCategories: boolean }`. Saves nothing; returns `{ format, found, ready, counts, categories, questions, warnings, errors }` (issues have `{ number, line, message }`) |
+| POST   | `/courses/:id/question-import`            | Same body. Imports every valid question and new category in one transaction: `201 { imported, categoriesCreated, skipped }`                                                                                                                                |
+| POST   | `/courses/:id/question-export`            | `{ format: "moodle" \| "gift", categoryId?, includeSubcategories? (default true), questionIds? }` → `{ filename, mimeType, content, exported, skipped, notes }`                                                                                            |
+| GET    | `/question-bank/courses`                  | Courses whose bank you manage (every course for administrators)                                                                                                                                                                                            |
+| POST   | `/question-copies`                        | `{ targetCourseId, targetCategoryId?, questionIds? \| categoryId?, includeSubcategories? }` → `201 { questions, categories, categoryId }`. Copies are independent                                                                                          |
+| GET    | `/courses/:id/shared-question-categories` | Categories shared with the course, each with `sharedFrom: { courseId, courseTitle }`                                                                                                                                                                       |
+| GET    | `/question-categories/:id/shares`         | `{ category, shares, courses, canShareWithSite }` (managers of the owning course)                                                                                                                                                                          |
+| POST   | `/question-categories/:id/shares`         | `{ courseId }` or `{ site: true }` (administrators) → `201 QuestionShare`                                                                                                                                                                                  |
+| DELETE | `/question-category-shares/:id`           | End a share. Random questions that other courses' quizzes draw from it are frozen to the questions they could pick at that moment                                                                                                                          |
+
+Import limits: 3 MB, 2,000 questions, 200 new categories and category paths of at most 50 levels. Files with a DOCTYPE are refused. A share covers the category and its subcategories; shared questions are read-only, and `GET /courses/:id/questions?categoryId=`, `GET /questions/:id`, `/preview` and `/check` work for courses they are shared with. Deleting a question or category that another course's quiz uses is 409.
+
 ### Forums
 
 | Method | Path                          | Description                                    |
@@ -146,7 +164,7 @@ Courses without a setup use natural (points) totals, as in 0.1.x. Gradebook resp
 
 ## Groups
 
-Groups split a course's participants into teams or sections. Staff see every group; students only see the groups they are in (with their active members). Changing groups needs `course:manageGroups` (teachers and teaching assistants).
+Groups split a course's participants into teams or sections. Staff see every group; students only see the groups they are in (with their active members). Changing groups needs `course:manageGroups` (teachers; teaching assistants could in 0.2.0 but no longer can).
 
 | Method | Path                                           | Description                                                                                 |
 | ------ | ---------------------------------------------- | ------------------------------------------------------------------------------------------- |
@@ -161,6 +179,19 @@ Groups split a course's participants into teams or sections. Staff see every gro
 `naming` defaults to `Group @`: `#` becomes a number and `@` a letter, skipping names already in use. Auto-create places active students only.
 
 Filter by group with `?groupId=` on `GET /courses/:id/participants` and `GET /activities/:id/submissions`; the group must be one you may see. Each participant has `groups` (only the groups you may see), and the course detail has `myGroups`.
+
+## Group modes
+
+`course:accessAllGroups` (teachers and administrators) sees every group's students and work.
+
+- `POST /courses` and `PATCH /courses/:id` take an optional `groupMode`: `none`, `separate` or `visible` (default `none`). `GET /courses/:id` returns it, and leaves out activities limited to groups the viewer isn't in (for everyone without `course:viewHidden`). For staff, each activity adds `groupMode` (its own setting, or null to follow the course) and `groupRestriction` (`[{ id, name }]`).
+- `POST /courses/:id/activities` and `PATCH /activities/:id` take optional `groupMode` (or null for the course default) and `groupIds` (up to 200 group ids to limit the activity to; `[]` opens it to everyone). Groups must belong to the course. A PATCH is all or nothing.
+- `GET /activities/:id` returns 404 to students outside the activity's groups, and adds `groups` (`{ mode, groups, allParticipants, postGroups, postToAll }`).
+- In separate groups, staff without `course:accessAllGroups` only get their own groups' students in `GET /activities/:id/submissions`, `GET /activities/:id/attempts?all=1`, `GET /activities/:id/grading`, `GET /attempts/:id`, `GET /packages/:id/report` and the gradebook; `?groupId=` must be a group they can pick (404 otherwise). Grading a student you can't see is 404, and a student the activity doesn't apply to is 400.
+- Forums: `GET /activities/:id/discussions?groupId=` lists only the discussions you can see, each with `group` (`{ id, name }` or null for all participants). `POST /activities/:id/discussions` takes an optional `groupId` (teachers: any group or null; others: one of their own groups, required when they're in several). `POST /discussions/:id/posts` is 403 when the group rules don't allow replying, and `PATCH /discussions/:id` with `groupId` moves a discussion (teachers).
+- The gradebook marks cells `notApplicable` (N/A in the CSV) or `hidden`, and rows `totalsHidden`; the student's own grades leave out activities they can't open.
+- `GET /files/:id` follows the rules of the file's activity: hidden or group-restricted activities, other groups' submissions and other groups' forum posts are 404.
+- Event: `activity.groups.updated` `{ activityId, courseId, userId }`.
 
 ## Cohorts
 
@@ -230,6 +261,79 @@ Icons: award, medal, trophy, star, rocket, flame, zap, crown, gem, heart, lightb
 | POST   | `/admin/email/retry-failed` | Queue failed emails again (administrators)                                                                                              |
 
 Mail apps' one-click unsubscribe (RFC 8058) posts to `/unsubscribe?token=` at the site root, outside `/api`.
+
+## Open Badges
+
+Signed in, for your own badges:
+
+| Method   | Path                      | Description                                                                                                                                         |
+| -------- | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET      | `/badges/:id/share`       | `{ earned, unavailableReason, share }`; `share` is `{ id, sharedAt, links: { assertion, page, badgeImage, credential, credentialImage } }` or null  |
+| POST     | `/badges/:id/share`       | Share a badge you hold (403 otherwise or while impersonating; 409 without `COURSEKIT_PUBLIC_URL`)                                                   |
+| DELETE   | `/badges/:id/share`       | Stop sharing; the old link answers "revoked"                                                                                                        |
+| GET      | `/me/badge-shares`        | `[{ badgeId, share }]`                                                                                                                              |
+| GET      | `/open-badges/shares/:id` | Public. What the verification page shows: `{ status: "valid" \| "revoked", revocationReason, issuer, badge, recipientName, issuedOn, note, links }` |
+| GET, PUT | `/admin/open-badges`      | Issuer settings `{ name, email, description }` (administrators; the email is published)                                                             |
+
+Public documents, outside `/api` (GET, CORS `*`, 404 without `COURSEKIT_PUBLIC_URL`; add `?download` to images and credentials):
+
+| Path                                                            | Description                                                                                                                                   |
+| --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/openbadges/v2/issuer`                                         | Open Badges 2.0 issuer profile                                                                                                                |
+| `/openbadges/v2/badges/:badgeId` and `/image.svg`               | BadgeClass and image, only while someone shares the badge                                                                                     |
+| `/openbadges/v2/assertions/:id` and `/badge.svg`                | Hosted assertion (410 with `revoked: true` once revoked or withdrawn; browsers asking for HTML go to `/verify-badge/:id`) and the baked image |
+| `/openbadges/v3/issuer`, `/openbadges/v3/achievements/:badgeId` | Open Badges 3.0 Profile and Achievement                                                                                                       |
+| `/openbadges/v3/credentials/:id` and `/badge.svg`               | OpenBadgeCredential as a VC-JWT (RS256) and the baked image; 410 once revoked                                                                 |
+| `/openbadges/v3/status/1`                                       | Revocation list (BitstringStatusListCredential as a VC-JWT)                                                                                   |
+| `/openbadges/v3/jwks.json`, `/openbadges/v3/keys/:kid`          | The public signing key                                                                                                                        |
+
+Revocation is permanent: a restored award must be shared again, which gives new links.
+
+## External tools (LTI 1.3)
+
+| Method     | Path                     | Description                                                                                                                                                                                                                                                                                                        |
+| ---------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| GET, POST  | `/admin/lti/tools`       | Administrators. `{ platform, tools }`; POST `{ name, description?, toolUrl, loginUrl, redirectUris[], keyType: "jwks" \| "key", jwksUrl?, publicKey?, deepLinkingUrl?, customParams?, shareName?, shareEmail?, allowAgs?, allowNrps?, status? }` returns the tool with its generated `clientId` and `deploymentId` |
+| GET, PATCH | `/admin/lti/tools/:id`   | Administrators. `{ status: "disabled" }` turns a tool off                                                                                                                                                                                                                                                          |
+| GET        | `/courses/:id/lti/tools` | `course:manageContent`. Tools teachers can pick                                                                                                                                                                                                                                                                    |
+| GET        | `/lti/activities/:id`    | Launch info for an External tool activity and your grade                                                                                                                                                                                                                                                           |
+
+External tool activities use `type: "lti"` with `settings: { toolId, launchUrl?, custom?, presentation: "window" \| "embed", lineItemResourceId?, lineItemTag? }`; `maxGrade: null` makes them ungraded.
+
+LTI endpoints, outside `/api`:
+
+| Method           | Path                                                                   | Description                                                                                |
+| ---------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| GET              | `/lti/jwks`                                                            | The platform's public keys                                                                 |
+| GET              | `/lti/launch/:activityId`                                              | Signed in. Starts a launch (third-party initiated login)                                   |
+| GET              | `/lti/deep-link/start?courseId=&toolId=&sectionId=` (or `activityId=`) | `course:manageContent`. Starts content selection                                           |
+| GET, POST        | `/lti/auth`                                                            | OIDC authorization endpoint; answers with a form post of the signed `id_token` and `state` |
+| POST             | `/lti/deep-link/return`                                                | `JWT=` the tool's LtiDeepLinkingResponse                                                   |
+| POST             | `/lti/token`                                                           | OAuth 2.0 `client_credentials` with a JWT `client_assertion`; a 1-hour bearer token        |
+| GET, POST        | `/lti/ags/:courseId/lineitems`                                         | Line item container (`Link: rel="next"` paging)                                            |
+| GET, PUT, DELETE | `/lti/ags/:courseId/lineitems/:id`                                     | A line item (an activity's own line item can't be deleted)                                 |
+| POST             | `/lti/ags/:courseId/lineitems/:id/scores`                              | `application/vnd.ims.lis.v1.score+json`                                                    |
+| GET              | `/lti/ags/:courseId/lineitems/:id/results`                             | Results                                                                                    |
+| GET              | `/lti/nrps/:courseId/memberships?role=&limit=`                         | Members with context roles; names and emails only when allowed                             |
+
+Services use the AGS and NRPS media types (406 or 415 otherwise), `Authorization: Bearer`, and answer 404 for a course with no activity using the calling tool.
+
+## SCORM and xAPI packages
+
+| Method | Path                                    | Description                                                                                                                                                                                 |
+| ------ | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/packages/:activityId`                 | Player info: `settings`, `current` (the package version and its table of contents), your attempts, `mode` (`learner` or `preview`), `canStartNew`, `resumeAttemptId`, `grade`               |
+| POST   | `/packages/:activityId/import`          | `course:manageContent`. `{ fileId }` of a zip uploaded with `POST /files` (context `activity`); becomes the new current version (201). A bad package is 422 `invalid_package`               |
+| POST   | `/packages/:activityId/launch`          | `{ itemId?, attemptId?, newAttempt?, preview? }` → `{ url, attemptId, itemId, mode, display, items }`. xAPI launch URLs carry `endpoint`, `auth`, `actor`, `registration` and `activity_id` |
+| GET    | `/packages/:activityId/report?groupId=` | `grades:viewAll`. `{ maxGrade, rows: [{ user, attempts, grade, completed }] }`                                                                                                              |
+
+Package activities use `type: "package"` with `settings: { display: "embed" \| "window", attemptsAllowed (0 = unlimited), gradingMethod: "highest" \| "last", requirePass }`.
+
+Outside `/api`:
+
+- `GET /content/:token/*` serves package files with `Content-Security-Policy: sandbox …` (never `allow-same-origin`), `nosniff`, `Cross-Origin-Resource-Policy: cross-origin` and no `X-Frame-Options`. HTML gets the run-time script first in `<head>`. Tokens are HMAC-signed, bound to the activity, version, user, attempt and purpose, and expire after six hours.
+- `POST /content/:token/__coursekit/commit` takes run-time commits (text/plain JSON, at most 2 MB). Previews record nothing.
+- The xAPI Learning Record Store under `/xapi/`: `about`, `statements` (PUT, POST and GET with `statementId`, `voidedStatementId` or `agent`, `verb`, `activity`, `registration`, `since`, `until`, `limit`, `ascending`), `activities/state`, `activities/profile`, `agents/profile`, `activities` and `agents`. Requests need `X-Experience-API-Version` and the Basic credentials from the launch URL, which only reach the learner's own data. CORS allows any origin; bodies are limited to 1 MB.
 
 ## Files
 

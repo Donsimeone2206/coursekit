@@ -1,4 +1,4 @@
-import { Contact, FolderTree, LayoutDashboard, Library, Mail, Medal, Settings, Users } from 'lucide-react';
+import { Contact, FolderTree, LayoutDashboard, Library, Mail, Medal, Puzzle, Settings, Users } from 'lucide-react';
 import { Navigate, NavLink, Outlet } from 'react-router';
 import { PageHeader } from '@/components/common';
 import { Page } from '@/components/layout/shell';
@@ -14,6 +14,7 @@ const TABS = [
   { to: '/admin/settings', label: 'Site settings', icon: Settings },
   { to: '/admin/email', label: 'Email', icon: Mail },
   { to: '/admin/badges', label: 'Badges', icon: Medal },
+  { to: '/admin/external-tools', label: 'External tools', icon: Puzzle },
 ];
 
 export default function AdminLayout() {

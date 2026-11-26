@@ -1,0 +1,38 @@
+// An example GIFT file: import it from a course's question bank (Question bank > Import).
+// Questions are separated by blank lines. Lines starting with // are comments.
+// GIFT reference: https://docs.moodle.org/en/GIFT_format
+
+$CATEGORY: $course$/top/Example questions/Geography
+
+::Capital of France:: What is the capital of France? {
+	=Paris
+	~Lyon#Lyon is the third-largest city.
+	~Marseille
+	####Paris has been the capital since the 10th century.
+}
+
+::Rivers:: Which of these rivers flow through Germany? {
+	~%50%The Rhine
+	~%50%The Danube
+	~%-100%The Thames
+}
+
+::Sahara:: The Sahara is the largest hot desert in the world. {T}
+
+::Everest:: Mount Everest is about {#8849:10} metres high.
+
+$CATEGORY: $course$/top/Example questions/Language
+
+::Plural:: The plural of "mouse" is {=mice =mouses}.
+
+::Translations:: Match each word to its English meaning. {
+	=Hund -> dog
+	=Katze -> cat
+	=Vogel -> bird
+	= -> fish
+}
+
+::Describe a journey::[markdown]Write about a **journey** that changed how you see the world.
+Aim for about 150 words. {}
+
+::Escapes:: In GIFT you write a literal \{ as \\\{ and a colon as \\\:. Is that right? {TRUE}

@@ -54,6 +54,8 @@ export interface CoursekitEvents {
   'quiz.attempt.submitted': { attemptId: string; activityId: string; courseId: string; userId: string; needsGrading: boolean };
   /** Grade categories, weights or the aggregation changed, so course totals may have changed for everyone. */
   'gradebook.setup.updated': { courseId: string; userId: string };
+  /** An activity's group mode or group restriction changed, so who it applies to may have changed. */
+  'activity.groups.updated': { activityId: string; courseId: string; userId: string };
 }
 
 export type EventName = keyof CoursekitEvents;

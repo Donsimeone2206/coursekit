@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { DEFAULT_COMPLETION } from '../../shared/constants.js';
 import type { ActivitySettingsMap, ActivityType, CompletionMode } from '../../shared/types.js';
+import type { DB } from '../db/types.js';
+import { ltiCustomParamsSchema, validateLtiSettings } from './lti/settings.js';
 
 const emptyToNull = (v: unknown) => (v === '' ? null : v);
 const httpUrl = z.url({ protocol: /^https?$/, message: 'Enter a valid http(s) URL' }).max(2000);
@@ -17,6 +19,10 @@ export interface ActivityTypeDefinition<T extends ActivityType = ActivityType> {
   /** Completion modes that make sense for this type. */
   completionModes: CompletionMode[];
   settings: z.ZodType<ActivitySettingsMap[T]>;
+  /** Graded types whose teachers may also leave them ungraded (maxGrade null). */
+  optionalGrade?: boolean;
+  /** Checks that need the database (e.g. that a referenced record exists), after the settings parsed. Throws an ApiError. */
+  validate?: (db: DB, courseId: string, settings: ActivitySettingsMap[T]) => Promise<void>;
 }
 
 export const activityTypes: { [K in ActivityType]: ActivityTypeDefinition<K> } = {
@@ -77,6 +83,34 @@ export const activityTypes: { [K in ActivityType]: ActivityTypeDefinition<K> } =
     completionModes: ['none', 'manual', 'auto'],
     settings: z.object({
       studentsCanStartDiscussions: z.boolean().default(true),
+    }),
+  },
+  lti: {
+    type: 'lti',
+    graded: true,
+    optionalGrade: true,
+    defaultCompletion: DEFAULT_COMPLETION.lti,
+    completionModes: ['none', 'manual', 'auto'],
+    settings: z.object({
+      toolId: z.string().max(64).nullable().default(null),
+      launchUrl: z.preprocess(emptyToNull, httpUrl.nullable()).default(null),
+      custom: ltiCustomParamsSchema.default({}),
+      presentation: z.enum(['window', 'embed']).default('window'),
+      lineItemResourceId: z.string().max(256).nullable().default(null),
+      lineItemTag: z.string().max(256).nullable().default(null),
+    }),
+    validate: validateLtiSettings,
+  },
+  package: {
+    type: 'package',
+    graded: true,
+    defaultCompletion: DEFAULT_COMPLETION.package,
+    completionModes: ['none', 'manual', 'auto'],
+    settings: z.object({
+      display: z.enum(['embed', 'window']).default('embed'),
+      attemptsAllowed: z.number().int().min(0).max(100).default(0),
+      gradingMethod: z.enum(['highest', 'last']).default('highest'),
+      requirePass: z.boolean().default(false),
     }),
   },
 };

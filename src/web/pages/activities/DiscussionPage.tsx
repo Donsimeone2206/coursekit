@@ -8,6 +8,7 @@ import type { DiscussionDetail, Post } from '@shared/types';
 import { Page } from '@/components/layout/shell';
 import { Markdown, MarkdownEditor } from '@/components/markdown';
 import { Avatar } from '@/components/ui/avatar';
+import { DiscussionGroupBadge } from '@/components/group-modes';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -285,6 +286,7 @@ export default function DiscussionPage() {
             <Badge variant="neutral">
               {data.replyCount} {data.replyCount === 1 ? 'reply' : 'replies'}
             </Badge>
+            {data.group !== undefined && (data.group || data.replyNote) && <DiscussionGroupBadge group={data.group} />}
           </div>
         </div>
         {data.canModerate && (
@@ -357,6 +359,8 @@ export default function DiscussionPage() {
           <p className="mb-3 text-sm font-semibold">Join the discussion</p>
           <Composer onSubmit={(body) => reply(null, body)} submitLabel="Post reply" />
         </Card>
+      ) : data.replyNote ? (
+        <p className="mt-6 rounded-lg bg-muted px-4 py-3 text-center text-sm text-muted-foreground">{data.replyNote}</p>
       ) : (
         data.locked && (
           <p className="mt-6 rounded-lg bg-muted px-4 py-3 text-center text-sm text-muted-foreground">This discussion is locked.</p>

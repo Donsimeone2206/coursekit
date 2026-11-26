@@ -122,4 +122,6 @@ export type { CoursekitEmail, DigestRunResult, OutboxRunResult } from './service
 export type * from '../shared/email.js';
 export type * from '../shared/types.js';
 export type * from '../shared/completion.js';
+export type * from '../shared/open-badges.js';
+export type * from '../shared/lti.js';
 export { COURSE_CAPABILITIES, ROLE_CAPABILITIES, getCourseCapabilities, type CourseCapability } from '../shared/permissions.js';

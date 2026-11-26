@@ -42,6 +42,7 @@
 import type { ActivityType, GradeAggregation, GradeCategory } from '../../shared/types.js';
 import type { DB } from '../db/types.js';
 import { round, toBool } from '../lib/util.js';
+import { loadAvailability } from './group-modes.js';
 
 export const DEFAULT_CATEGORY_NAME = 'Uncategorised';
 
@@ -280,7 +281,8 @@ export async function loadScores(db: DB, courseId: string, userIds?: readonly st
 
 /**
  * Full breakdown (subtotals, dropped items) for each user, as staff see it: hidden activities count.
- * Pass `includeHidden: false` for the totals a student sees on their own grades page.
+ * Pass `includeHidden: false` for the totals a student sees on their own grades page. Activities limited to
+ * groups a user isn't in never count for them (as if ungraded).
  */
 export async function courseGrades(
   db: DB,
@@ -292,8 +294,16 @@ export async function courseGrades(
   if (userIds.length === 0) return result;
   const setup = await loadGradeSetup(db, courseId, { includeHidden: options.includeHidden ?? true });
   const scores = await loadScores(db, courseId, userIds);
+  const availability = await loadAvailability(db, courseId, userIds);
   const none = new Map<string, number>();
-  for (const userId of userIds) if (!result.has(userId)) result.set(userId, computeCourseGrade(setup, scores.get(userId) ?? none));
+  for (const userId of userIds) {
+    if (result.has(userId)) continue;
+    let own: Scores = scores.get(userId) ?? none;
+    if (availability.restricted.size) {
+      own = new Map([...own].filter(([activityId]) => availability.isAvailable(activityId, userId)));
+    }
+    result.set(userId, computeCourseGrade(setup, own));
+  }
   return result;
 }
 

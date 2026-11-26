@@ -9,6 +9,7 @@ import { isoDateSchema } from '../lib/schemas.js';
 import { addDays, likePattern, newId, now, num, round } from '../lib/util.js';
 import { assertCan, loadCourseAccess } from '../services/access.js';
 import { summarizeCourses } from '../services/courses.js';
+import { staffWorkRules, unavailableActivityIds } from '../services/group-modes.js';
 import { toCourseRef } from '../services/serialize.js';
 
 type EnrolledCourse = CourseRow & { myRole: 'teacher' | 'assistant' | 'student' };
@@ -39,6 +40,8 @@ export function meRoutes(deps: AppDeps) {
     const staffIds = enrolled.filter((e) => e.myRole !== 'student').map((e) => e.id);
     const allIds = enrolled.map((e) => e.id);
     const nowIso = now();
+    // Activities limited to groups the student isn't in don't appear anywhere for them.
+    const unavailable = await unavailableActivityIds(db, user.id, studentIds);
 
     // Timeline of due work in courses where the user is a student.
     const dueRows = studentIds.length
@@ -75,6 +78,7 @@ export function meRoutes(deps: AppDeps) {
 
     const timeline: TimelineItem[] = [];
     for (const a of dueRows) {
+      if (unavailable.has(a.id)) continue;
       const course = byId.get(a.courseId)!;
       const dueAt = a.dueAt!;
       const status: TimelineItem['status'] = graded.has(a.id)
@@ -137,6 +141,7 @@ export function meRoutes(deps: AppDeps) {
           .where('grades.score', 'is not', null)
           .orderBy('grades.gradedAt', 'desc')
           .execute()
+          .then((rows) => rows.filter((g) => !unavailable.has(g.activityId)))
       : [];
     const recentGrades = gradeRows.slice(0, 5).map((g) => ({
       activityId: g.activityId,
@@ -149,25 +154,58 @@ export function meRoutes(deps: AppDeps) {
     }));
     const fractions = gradeRows.filter((g) => (g.maxGrade ?? 0) > 0).map((g) => (g.score ?? 0) / g.maxGrade!);
 
-    const pending = staffIds.length
-      ? await db
-          .selectFrom('submissions')
-          .leftJoin('grades', (join) =>
-            join.onRef('grades.activityId', '=', 'submissions.activityId').onRef('grades.userId', '=', 'submissions.userId'),
-          )
-          .innerJoin('activities', 'activities.id', 'submissions.activityId')
-          .select(['submissions.activityId', 'submissions.courseId', 'activities.title', (eb) => eb.fn.countAll().as('n')])
-          .where('submissions.courseId', 'in', staffIds)
-          .where((eb) =>
-            eb.or([
-              eb('grades.score', 'is', null),
-              eb('grades.gradedAt', 'is', null),
-              eb('grades.gradedAt', '<', eb.ref('submissions.submittedAt')),
-            ]),
-          )
-          .groupBy(['submissions.activityId', 'submissions.courseId', 'activities.title'])
-          .execute()
-      : [];
+    // "To grade" only counts the work the viewer sees: separate groups and group restrictions (services/group-modes.ts).
+    // Courses where no group rule applies are counted in SQL; only the others need a row per submission.
+    const rules = await staffWorkRules(
+      db,
+      user,
+      enrolled.filter((e) => e.myRole !== 'student'),
+    );
+    const ruled = new Set(rules.ruled);
+    const ungraded = (courseIds: string[]) =>
+      db
+        .selectFrom('submissions')
+        .leftJoin('grades', (join) =>
+          join.onRef('grades.activityId', '=', 'submissions.activityId').onRef('grades.userId', '=', 'submissions.userId'),
+        )
+        .innerJoin('activities', 'activities.id', 'submissions.activityId')
+        .where('submissions.courseId', 'in', courseIds)
+        .where((eb) =>
+          eb.or([
+            eb('grades.score', 'is', null),
+            eb('grades.gradedAt', 'is', null),
+            eb('grades.gradedAt', '<', eb.ref('submissions.submittedAt')),
+          ]),
+        );
+    const plainIds = staffIds.filter((id) => !ruled.has(id));
+    const [counted, work] = await Promise.all([
+      plainIds.length
+        ? ungraded(plainIds)
+            .select(['submissions.activityId', 'submissions.courseId', 'activities.title', (eb) => eb.fn.countAll().as('n')])
+            .groupBy(['submissions.activityId', 'submissions.courseId', 'activities.title'])
+            .execute()
+        : [],
+      rules.ruled.length
+        ? ungraded(rules.ruled)
+            .select([
+              'submissions.activityId',
+              'submissions.courseId',
+              'submissions.userId',
+              'activities.title',
+              'activities.groupMode as activityGroupMode',
+            ])
+            .execute()
+            .then((rows) => rules.filter(rows))
+        : [],
+    ]);
+    const pendingCounts = new Map<string, { activityId: string; courseId: string; title: string; n: number }>();
+    for (const p of counted)
+      pendingCounts.set(p.activityId, { activityId: p.activityId, courseId: p.courseId, title: p.title, n: num(p.n) });
+    for (const p of work) {
+      const entry = pendingCounts.get(p.activityId) ?? { activityId: p.activityId, courseId: p.courseId, title: p.title, n: 0 };
+      entry.n++;
+      pendingCounts.set(p.activityId, entry);
+    }
 
     const completedRow = studentIds.length
       ? await db
@@ -184,8 +222,8 @@ export function meRoutes(deps: AppDeps) {
       timeline,
       announcements,
       recentGrades,
-      toGrade: pending
-        .map((p) => ({ activityId: p.activityId, title: p.title, course: toCourseRef(byId.get(p.courseId)!), count: num(p.n) }))
+      toGrade: [...pendingCounts.values()]
+        .map((p) => ({ activityId: p.activityId, title: p.title, course: toCourseRef(byId.get(p.courseId)!), count: p.n }))
         .sort((a, b) => b.count - a.count),
       stats: {
         enrolled: studentIds.length,
@@ -246,6 +284,11 @@ export function meRoutes(deps: AppDeps) {
     const ids = enrolled.map((e) => e.id);
     const staffIds = new Set(enrolled.filter((e) => e.myRole !== 'student').map((e) => e.id));
     const events: CalendarEvent[] = [];
+    const unavailable = await unavailableActivityIds(
+      db,
+      user.id,
+      ids.filter((id) => !staffIds.has(id)),
+    );
 
     if (ids.length) {
       const due = await db
@@ -265,7 +308,7 @@ export function meRoutes(deps: AppDeps) {
         .where('activities.dueAt', '<=', q.to)
         .execute();
       for (const a of due) {
-        if (!staffIds.has(a.courseId) && (!a.visible || !a.sectionVisible)) continue;
+        if (!staffIds.has(a.courseId) && (!a.visible || !a.sectionVisible || unavailable.has(a.id))) continue;
         const course = byId.get(a.courseId)!;
         events.push({
           id: `due-${a.id}`,
@@ -384,6 +427,11 @@ export function meRoutes(deps: AppDeps) {
     const enrolled = await enrolledCourses(db, user);
     const ids = enrolled.map((e) => e.id);
     const staffIds = new Set(enrolled.filter((e) => e.myRole !== 'student').map((e) => e.id));
+    const unavailable = await unavailableActivityIds(
+      db,
+      user.id,
+      ids.filter((id) => !staffIds.has(id)),
+    );
 
     const courses = await db
       .selectFrom('courses')
@@ -431,7 +479,7 @@ export function meRoutes(deps: AppDeps) {
     const results: SearchResults = {
       courses: courses.map(toCourseRef),
       activities: activityRows
-        .filter((a) => staffIds.has(a.courseId) || (a.visible && a.sectionVisible))
+        .filter((a) => staffIds.has(a.courseId) || (a.visible && a.sectionVisible && !unavailable.has(a.id)))
         .slice(0, 8)
         .map((a) => ({
           id: a.id,

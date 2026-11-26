@@ -8,8 +8,9 @@ import type { QuizSlotInfo, QuizSlots } from '../../shared/types.js';
 import type { DB } from '../db/types.js';
 import type { ActivityRow, QuestionCategoryRow, QuizSlotRow } from '../db/schema.js';
 import { badRequest } from '../lib/http.js';
-import { newId, num, round } from '../lib/util.js';
-import { loadCategories, subtreeIds, summarizeQuestions, transact } from './question-bank.js';
+import { newId, num, parseJson, round } from '../lib/util.js';
+import { loadCategories, sortCategories, subtreeIds, summarizeQuestions, transact } from './question-bank.js';
+import { sharedCategoryRows, sharedFromMap } from './question-sharing.js';
 import { shuffle, snapshotFromRow, type QuestionSnapshot } from './question-types.js';
 
 /** Most questions one attempt can have. */
@@ -68,27 +69,85 @@ interface Pools {
   pools: Map<string, string[]>;
 }
 
+/**
+ * The quiz's course's categories, plus those of other courses whose categories the given ids belong to
+ * (categories shared with this course, or that were shared when a slot started using them).
+ */
+async function categoriesFor(db: DB, activity: ActivityRow, categoryIds: Array<string | null>): Promise<QuestionCategoryRow[]> {
+  const ids = [...new Set(categoryIds.filter((id): id is string => !!id))];
+  const others = ids.length
+    ? await db
+        .selectFrom('questionCategories')
+        .select('courseId')
+        .distinct()
+        .where('id', 'in', ids)
+        .where('courseId', '!=', activity.courseId)
+        .execute()
+    : [];
+  if (others.length === 0) return loadCategories(db, activity.courseId);
+  const courses = [activity.courseId, ...others.map((o) => o.courseId)];
+  return sortCategories(await db.selectFrom('questionCategories').selectAll().where('courseId', 'in', courses).execute());
+}
+
+/** Question ids of these that still exist. */
+async function existingQuestionIds(db: DB, ids: string[]): Promise<Set<string>> {
+  const out = new Set<string>();
+  for (let i = 0; i < ids.length; i += 500) {
+    const rows = await db
+      .selectFrom('questions')
+      .select('id')
+      .where('id', 'in', ids.slice(i, i + 500))
+      .execute();
+    for (const r of rows) out.add(r.id);
+  }
+  return out;
+}
+
 async function randomPools(db: DB, activity: ActivityRow, slots: QuizSlotRow[]): Promise<Pools> {
   const random = slots.filter((s) => s.kind === 'random');
   if (random.length === 0) return { categories: [], pools: new Map() };
-  const categories = await loadCategories(db, activity.courseId);
-  const wanted = [...new Set(random.flatMap((s) => slotCategories(s, categories)))];
+  const categories = await categoriesFor(
+    db,
+    activity,
+    random.map((s) => s.categoryId),
+  );
+  const courseOf = new Map(categories.map((c) => [c.id, c.courseId]));
+  const foreign = random.filter((s) => courseOf.get(s.categoryId!) !== activity.courseId);
+  const shared = foreign.length ? (await sharedCategoryRows(db, activity.courseId)).ids : new Set<string>();
+  // Another course's category draws live only while it's shared with this course; after the share ended, the
+  // slot picks from the questions it had then (see endShare), or from nothing.
+  const live = (slot: QuizSlotRow): string[] => {
+    if (courseOf.get(slot.categoryId!) === activity.courseId) return slotCategories(slot, categories);
+    return shared.has(slot.categoryId!) ? slotCategories(slot, categories).filter((id) => shared.has(id)) : [];
+  };
+  const ended = foreign.filter((s) => !shared.has(s.categoryId!));
+  const frozen = new Map<string, string[]>();
+  if (ended.length) {
+    const rows = await db
+      .selectFrom('quizSlotPools')
+      .selectAll()
+      .where(
+        'slotId',
+        'in',
+        ended.map((s) => s.id),
+      )
+      .execute();
+    for (const r of rows) frozen.set(r.slotId, parseJson<string[]>(r.questionIds, []));
+  }
+  const stillThere = await existingQuestionIds(db, [...new Set([...frozen.values()].flat())]);
+  const wanted = [...new Set(random.flatMap(live))];
   const rows = wanted.length
-    ? await db
-        .selectFrom('questions')
-        .select(['id', 'categoryId'])
-        .where('courseId', '=', activity.courseId)
-        .where('categoryId', 'in', wanted)
-        .orderBy('id')
-        .execute()
+    ? await db.selectFrom('questions').select(['id', 'categoryId']).where('categoryId', 'in', wanted).orderBy('id').execute()
     : [];
   const fixed = new Set(slots.filter((s) => s.kind === 'question').map((s) => s.questionId));
   const pools = new Map<string, string[]>();
   for (const slot of random) {
-    const cats = new Set(slotCategories(slot, categories));
+    const kept = frozen.get(slot.id);
+    const cats = new Set(live(slot));
+    const ids = kept ? kept.filter((id) => stillThere.has(id)) : rows.filter((r) => cats.has(r.categoryId)).map((r) => r.id);
     pools.set(
       slot.id,
-      rows.filter((r) => cats.has(r.categoryId) && !fixed.has(r.id)).map((r) => r.id),
+      ids.filter((id) => !fixed.has(id)),
     );
   }
   return { categories, pools };
@@ -109,17 +168,28 @@ function neededFrom(slot: QuizSlotRow, random: QuizSlotRow[], categories: Questi
 export async function describeSlots(db: DB, activity: ActivityRow): Promise<QuizSlots> {
   const slots = await loadSlots(db, activity.id);
   const fixedIds = slots.filter((s) => s.kind === 'question').map((s) => s.questionId!);
-  const { pools, categories: poolCategories } = await randomPools(db, activity, slots);
-  const categories = poolCategories.length ? poolCategories : await loadCategories(db, activity.courseId);
+  const { pools } = await randomPools(db, activity, slots);
   const rows = fixedIds.length
     ? await db
         .selectFrom('questions')
-        .select(['id', 'type', 'name', 'prompt', 'points', 'categoryId', 'updatedAt'])
+        .select(['id', 'type', 'name', 'prompt', 'points', 'categoryId', 'courseId', 'updatedAt'])
         .where('id', 'in', fixedIds)
         .execute()
     : [];
-  const summaries = new Map((await summarizeQuestions(db, rows, categories)).map((q) => [q.id, q]));
-  const categoryNames = new Map(categories.map((c) => [c.id, c.name]));
+  const categories = await categoriesFor(db, activity, [...slots.map((s) => s.categoryId), ...rows.map((r) => r.categoryId)]);
+  const sharedFrom = await sharedFromMap(
+    db,
+    categories.filter((c) => c.courseId !== activity.courseId).map((c) => c.courseId),
+  );
+  const summaries = new Map(
+    (await summarizeQuestions(db, rows, categories, { courseId: activity.courseId, sharedFrom })).map((q) => [q.id, q]),
+  );
+  const categoryById = new Map(categories.map((c) => [c.id, c]));
+  const categoryInfo = (id: string) => {
+    const c = categoryById.get(id);
+    const from = c && c.courseId !== activity.courseId ? sharedFrom.get(c.courseId) : undefined;
+    return { id, name: c?.name ?? '', ...(from ? { sharedFrom: from } : {}) };
+  };
   const random = slots.filter((s) => s.kind === 'random');
   const problems: string[] = [];
 
@@ -130,7 +200,7 @@ export async function describeSlots(db: DB, activity: ActivityRow): Promise<Quiz
       points: s.points,
       questionCount: s.questionCount,
       question: s.kind === 'question' ? (summaries.get(s.questionId!) ?? null) : null,
-      category: s.categoryId ? { id: s.categoryId, name: categoryNames.get(s.categoryId) ?? '' } : null,
+      category: s.categoryId ? categoryInfo(s.categoryId) : null,
       includeSubcategories: !!s.includeSubcategories,
       available: null,
       needed: null,
@@ -161,28 +231,55 @@ export async function saveSlots(db: DB, activity: ActivityRow, inputs: SlotInput
   const total = inputs.reduce((n, s) => n + (s.kind === 'random' ? s.questionCount : 1), 0);
   if (total > MAX_QUIZ_QUESTIONS) throw badRequest(`A quiz can have up to ${MAX_QUIZ_QUESTIONS} questions.`);
 
+  // Allowed: this course's questions and categories, those shared with it, and (after a share ends) those the
+  // quiz already uses, so the quiz keeps working; they can't be added again once removed.
+  const current = await loadSlots(db, activity.id);
+  const keptQuestions = new Set(current.flatMap((s) => (s.kind === 'question' && s.questionId ? [s.questionId] : [])));
+  let shared: Set<string> | null = null;
+  const isShared = async (categoryId: string) => (shared ??= (await sharedCategoryRows(db, activity.courseId)).ids).has(categoryId);
+
   const questions = fixedIds.length
-    ? await db
-        .selectFrom('questions')
-        .select(['id', 'points'])
-        .where('courseId', '=', activity.courseId)
-        .where('id', 'in', fixedIds)
-        .execute()
+    ? await db.selectFrom('questions').select(['id', 'points', 'courseId', 'categoryId']).where('id', 'in', fixedIds).execute()
     : [];
-  if (questions.length !== fixedIds.length) throw badRequest("One of the questions is not in this course's question bank.");
+  let allowed = questions.length === fixedIds.length;
+  for (const q of questions) {
+    if (allowed && q.courseId !== activity.courseId && !keptQuestions.has(q.id)) allowed = await isShared(q.categoryId);
+  }
+  if (!allowed) throw badRequest("One of the questions is not in this course's question bank.");
   const categoryIds = [...new Set(inputs.flatMap((s) => (s.kind === 'random' ? [s.categoryId] : [])))];
   const categories = categoryIds.length
-    ? await db
-        .selectFrom('questionCategories')
-        .select('id')
-        .where('courseId', '=', activity.courseId)
-        .where('id', 'in', categoryIds)
-        .execute()
+    ? await db.selectFrom('questionCategories').select(['id', 'courseId']).where('id', 'in', categoryIds).execute()
     : [];
   if (categories.length !== categoryIds.length) throw badRequest("One of the categories is not in this course's question bank.");
+  // A random slot on another course's category that is no longer shared may stay as it was, or pick fewer
+  // questions, but never draw from more: each existing slot covers one slot of the same category and scope.
+  const courseOf = new Map(categories.map((c) => [c.id, c.courseId]));
+  const unmatched = current.filter((s) => s.kind === 'random');
+  const keptFrom = new Map<SlotInput, QuizSlotRow>();
+  for (const s of inputs) {
+    if (s.kind !== 'random' || courseOf.get(s.categoryId) === activity.courseId || (await isShared(s.categoryId))) continue;
+    const fits = (p: QuizSlotRow) =>
+      p.categoryId === s.categoryId && !!p.includeSubcategories === s.includeSubcategories && s.questionCount <= p.questionCount;
+    let i = unmatched.findIndex((p) => p.id === s.id && fits(p));
+    if (i < 0) i = unmatched.findIndex(fits);
+    if (i < 0) throw badRequest("One of the categories is not in this course's question bank.");
+    keptFrom.set(s, unmatched.splice(i, 1)[0]!);
+  }
+  const keptPools = keptFrom.size
+    ? await db
+        .selectFrom('quizSlotPools')
+        .selectAll()
+        .where(
+          'slotId',
+          'in',
+          [...keptFrom.values()].map((p) => p.id),
+        )
+        .execute()
+    : [];
+  const poolOf = new Map(keptPools.map((p) => [p.slotId, p.questionIds]));
 
   const defaults = new Map(questions.map((q) => [q.id, q.points]));
-  const existing = new Set((await loadSlots(db, activity.id)).map((s) => s.id));
+  const existing = new Set(current.map((s) => s.id));
   const used = new Set<string>();
   const rows: QuizSlotRow[] = inputs.map((s, position) => {
     const id = s.id && existing.has(s.id) && !used.has(s.id) ? s.id : newId();
@@ -212,6 +309,10 @@ export async function saveSlots(db: DB, activity: ActivityRow, inputs: SlotInput
         };
   });
   const marks = round(rows.reduce((sum, s) => sum + s.points * s.questionCount, 0));
+  const pools = inputs.flatMap((s, i) => {
+    const questionIds = poolOf.get(keptFrom.get(s)?.id ?? '');
+    return questionIds ? [{ slotId: rows[i]!.id, questionIds }] : [];
+  });
 
   await transact(db, async (trx) => {
     await trx.deleteFrom('quizSlots').where('activityId', '=', activity.id).execute();
@@ -221,6 +322,8 @@ export async function saveSlots(db: DB, activity: ActivityRow, inputs: SlotInput
         .values(rows.slice(i, i + 100))
         .execute();
     }
+    // Deleting the slots removed their kept pools; put them back.
+    for (const pool of pools) await trx.insertInto('quizSlotPools').values(pool).execute();
     await trx
       .updateTable('activities')
       .set({ maxGrade: marks > 0 ? marks : 10 })

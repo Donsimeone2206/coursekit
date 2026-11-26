@@ -4,8 +4,10 @@ import { useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router';
 import { toast } from 'sonner';
 import { COVER_COLORS } from '@shared/constants';
+import { GROUP_MODE_DESCRIPTIONS } from '@shared/group-modes';
 import type { Category, CourseDetail, CourseVisibility, EnrolmentMethod } from '@shared/types';
 import { CompletionSettingsCard } from '@/components/completion/completion-settings';
+import { GroupModeSelect } from '@/components/group-modes';
 import { Page } from '@/components/layout/shell';
 import { MarkdownEditor } from '@/components/markdown';
 import { Button } from '@/components/ui/button';
@@ -65,6 +67,7 @@ function toForm(c: CourseDetail) {
     enrolmentKey: c.enrolmentKey ?? '',
     startDate: toDateInput(c.startDate),
     endDate: toDateInput(c.endDate),
+    groupMode: c.groupMode ?? 'none',
   };
 }
 
@@ -169,6 +172,15 @@ export default function CourseSettingsPage() {
                 {(p) => <Input {...p} type="date" value={form.endDate} onChange={(e) => set('endDate', e.target.value)} />}
               </Field>
             </div>
+          </Section>
+
+          <Section
+            title="Groups"
+            description="How groups work in this course. Each activity can use the course default or its own group mode."
+          >
+            <Field label="Default group mode" hint={GROUP_MODE_DESCRIPTIONS[form.groupMode]}>
+              {(p) => <GroupModeSelect id={p.id} value={form.groupMode} onChange={(v) => set('groupMode', v)} />}
+            </Field>
           </Section>
 
           <Section title="Enrolment" description="How students join the course.">

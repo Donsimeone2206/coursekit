@@ -8,6 +8,7 @@ import { AwardBadgeDialog } from '@/components/completion/award-dialog';
 import { BADGE_COLOR_META, BadgeArt } from '@/components/completion/badge-art';
 import { BadgeFormDialog } from '@/components/completion/badge-dialog';
 import { Page } from '@/components/layout/shell';
+import { BadgeSharePanel } from '@/components/open-badges/share-panel';
 import { Avatar } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -294,6 +295,7 @@ export default function BadgePage() {
               )
             )}
           </Card>
+          {badge.earnedAt && <BadgeSharePanel badgeId={badge.id} className="mt-4 bg-card" />}
           {badge.recipients && <Recipients badge={badge} onChange={refresh} />}
           {editing && (
             <BadgeFormDialog

@@ -8,10 +8,13 @@ import type { ActivityRow, CourseRow } from '../db/schema.js';
 import { badRequest, conflict, forbidden, notFound, readBody, readQuery } from '../lib/http.js';
 import { courseRoleSchema, emailSchema, imageUrlSchema, isoDateSchema, markdownSchema, pageSchema } from '../lib/schemas.js';
 import { likePattern, newId, now, num } from '../lib/util.js';
+import { deleteStoredFiles, packageStorageKeys } from '../packages/service.js';
 import { assertCan, assertWritable, loadCourseAccess } from '../services/access.js';
 import { parseSettings } from '../services/activity-types.js';
 import { summarizeCourses, uniqueCourseSlug } from '../services/courses.js';
 import { enrolUsers } from '../services/enrolments.js';
+import { countDiscussions } from '../services/group-forums.js';
+import { groupHiddenActivityIds, restrictionRefs, toGroupMode } from '../services/group-modes.js';
 import { findVisibleGroup, groupMemberIds, groupsByUser, groupsOfUser } from '../services/groups.js';
 import { courseMemberIds, notify } from '../services/notify.js';
 import { progressByUser } from '../services/progress.js';
@@ -39,6 +42,7 @@ const courseFields = {
   enrolmentKey: z.string().trim().max(100).nullable(),
   startDate: isoDateSchema.nullable(),
   endDate: isoDateSchema.nullable(),
+  groupMode: z.enum(['none', 'separate', 'visible']),
 };
 
 const createSchema = z.object({
@@ -53,6 +57,7 @@ const createSchema = z.object({
   enrolmentKey: courseFields.enrolmentKey.default(null),
   startDate: courseFields.startDate.default(null),
   endDate: courseFields.endDate.default(null),
+  groupMode: courseFields.groupMode.default('none'),
 });
 
 const updateSchema = z.object(courseFields).partial();
@@ -160,6 +165,7 @@ export function courseRoutes(deps: AppDeps) {
       createdBy: user.id,
       createdAt: ts,
       updatedAt: ts,
+      groupMode: input.groupMode,
     };
     await db.transaction().execute(async (trx) => {
       await trx.insertInto('courses').values(course).execute();
@@ -185,29 +191,27 @@ export function courseRoutes(deps: AppDeps) {
     if (!canView && course.visibility !== 'published') throw notFound('Course');
     const showHidden = access.can('course:viewHidden');
 
-    const [sections, activities] = await Promise.all([
+    const [sections, allActivities, groupHidden, restrictions] = await Promise.all([
       db.selectFrom('sections').selectAll().where('courseId', '=', course.id).orderBy('position', 'asc').execute(),
       db.selectFrom('activities').selectAll().where('courseId', '=', course.id).orderBy('position', 'asc').execute(),
+      groupHiddenActivityIds(db, access),
+      showHidden ? restrictionRefs(db, course.id) : new Map<string, never[]>(),
     ]);
+    // Activities limited to groups the viewer isn't in don't exist for them.
+    const activities = allActivities.filter((a) => !groupHidden.has(a.id));
 
     const quizIds = activities.filter((a) => a.type === 'quiz').map((a) => a.id);
-    const forumIds = activities.filter((a) => a.type === 'forum').map((a) => a.id);
+    const forums = activities.filter((a) => a.type === 'forum');
     const [questionCounts, discussionCounts, completions] = await Promise.all([
       quizTotals(db, quizIds),
-      forumIds.length
-        ? db
-            .selectFrom('discussions')
-            .select(['activityId', (eb) => eb.fn.countAll().as('n')])
-            .where('activityId', 'in', forumIds)
-            .groupBy('activityId')
-            .execute()
-        : [],
+      countDiscussions(db, access, forums),
       canView
         ? db.selectFrom('completions').select('activityId').where('courseId', '=', course.id).where('userId', '=', user.id).execute()
         : [],
     ]);
     const counts = new Map<string, number>();
-    for (const row of [...questionCounts, ...discussionCounts]) counts.set(row.activityId, num(row.n));
+    for (const row of questionCounts) counts.set(row.activityId, num(row.n));
+    for (const [activityId, row] of discussionCounts) counts.set(activityId, row.discussions);
     const completed = new Set(completions.map((r) => r.activityId));
 
     const sectionDtos: Section[] = sections
@@ -233,6 +237,7 @@ export function courseRoutes(deps: AppDeps) {
             completion: a.completion,
             completed: completed.has(a.id),
             meta: activityMeta(a, counts),
+            ...(showHidden ? { groupMode: a.groupMode ?? null, groupRestriction: restrictions.get(a.id) ?? [] } : {}),
           })),
       }));
 
@@ -254,6 +259,7 @@ export function courseRoutes(deps: AppDeps) {
       canEnrol: !access.enrolment && course.visibility === 'published' && course.enrolment !== 'invite',
       outlineOnly: !canView,
       myGroups: canView ? await groupsOfUser(db, course.id, user.id) : [],
+      groupMode: toGroupMode(course.groupMode),
     };
     return c.json(detail);
   });
@@ -283,8 +289,10 @@ export function courseRoutes(deps: AppDeps) {
     const access = await loadCourseAccess(db, user, c.req.param('courseId'));
     assertCan(access, 'course:delete');
     const files = await db.selectFrom('files').select('storageKey').where('courseId', '=', access.course.id).execute();
+    const packageKeys = await packageStorageKeys(db, { courseId: access.course.id });
     await db.deleteFrom('courses').where('id', '=', access.course.id).execute();
     await Promise.allSettled(files.map((f) => deps.storage.delete(f.storageKey)));
+    await deleteStoredFiles(deps, packageKeys);
     events.emit('course.deleted', { courseId: access.course.id });
     return c.json({ ok: true });
   });

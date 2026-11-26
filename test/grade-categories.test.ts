@@ -1,3 +1,6 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Migrator } from 'kysely/migration';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { GradebookSetup, GradebookSetupInput } from '../src/shared/types.js';
@@ -537,7 +540,11 @@ describe('upgrading from 0.1.x', () => {
 
 describe('demo data', () => {
   it('sets up weighted categories in Modern Web Development', async () => {
-    const demo = await createCoursekit({ databaseUrl: 'sqlite::memory:', webDir: false });
+    const demo = await createCoursekit({
+      databaseUrl: 'sqlite::memory:',
+      webDir: false,
+      dataDir: mkdtempSync(join(tmpdir(), 'coursekit-test-')),
+    });
     try {
       await demo.seedDemo({ password: 'demo-password' });
       const course = await demo.db

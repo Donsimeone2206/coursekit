@@ -11,6 +11,7 @@ import type {
   CourseRole,
   CourseVisibility,
   EnrolmentMethod,
+  GroupMode,
   QuestionType,
   SiteRole,
   UserStatus,
@@ -23,6 +24,17 @@ import type {
   CourseCompletionSettingsTable,
   CourseCompletionsTable,
 } from './schema-completion.js';
+import type { OpenBadgeSharesTable } from './schema-open-badges.js';
+import type { LtiAccessTokensTable, LtiLineItemsTable, LtiScoresTable, LtiToolsTable, LtiUsedTokensTable } from './schema-lti.js';
+import type {
+  PackageAttemptsTable,
+  PackageFilesTable,
+  PackageScoStatesTable,
+  PackageVersionsTable,
+  XapiDocumentsTable,
+  XapiStatementsTable,
+} from './schema-packages.js';
+import type { QuestionCategorySharesTable, QuizSlotPoolsTable } from './schema-question-sharing.js';
 
 export interface SettingsTable {
   key: string;
@@ -78,6 +90,8 @@ export interface CoursesTable {
   createdBy: string | null;
   createdAt: string;
   updatedAt: string;
+  /** The course's default group mode (0.3.0). */
+  groupMode: Generated<GroupMode>;
 }
 
 export interface EnrolmentsTable {
@@ -117,6 +131,8 @@ export interface ActivitiesTable {
   createdBy: string | null;
   createdAt: string;
   updatedAt: string;
+  /** The activity's own group mode; null follows the course (0.3.0). */
+  groupMode: Generated<GroupMode | null>;
 }
 
 export interface CompletionsTable {
@@ -136,6 +152,10 @@ export interface FilesTable {
   size: number;
   storageKey: string;
   createdAt: string;
+  /** The activity the file belongs to (a resource's file, submitted work, a forum post's upload); downloads follow its rules. */
+  activityId: string | null;
+  /** For a forum post's upload: the discussion it was posted in. */
+  discussionId: string | null;
 }
 
 export interface SubmissionsTable {
@@ -254,6 +274,8 @@ export interface DiscussionsTable {
   replyCount: number;
   lastPostAt: string;
   createdAt: string;
+  /** The group the discussion belongs to; null is for all participants (0.3.0). */
+  groupId: Generated<string | null>;
 }
 
 export interface PostsTable {
@@ -358,9 +380,24 @@ export interface Database {
   badgeAwards: BadgeAwardsTable;
   questionCategories: QuestionCategoriesTable;
   quizSlots: QuizSlotsTable;
+  questionCategoryShares: QuestionCategorySharesTable;
+  quizSlotPools: QuizSlotPoolsTable;
   gradeSettings: GradeSettingsTable;
   gradeCategories: GradeCategoriesTable;
   gradeItems: GradeItemsTable;
+  openBadgeShares: OpenBadgeSharesTable;
+  ltiTools: LtiToolsTable;
+  ltiLineItems: LtiLineItemsTable;
+  ltiScores: LtiScoresTable;
+  ltiAccessTokens: LtiAccessTokensTable;
+  ltiUsedTokens: LtiUsedTokensTable;
+  activityGroups: ActivityGroupsTable;
+  packageVersions: PackageVersionsTable;
+  packageFiles: PackageFilesTable;
+  packageAttempts: PackageAttemptsTable;
+  packageScoStates: PackageScoStatesTable;
+  xapiStatements: XapiStatementsTable;
+  xapiDocuments: XapiDocumentsTable;
 }
 
 export type UserRow = Selectable<UsersTable>;
@@ -453,6 +490,14 @@ export interface CohortCoursesTable {
   courseId: string;
   role: CourseRole;
   createdBy: string | null;
+  createdAt: string;
+}
+
+/** An activity limited to the members of some groups (no rows: everyone). `groupId` may name a deleted group. */
+export interface ActivityGroupsTable {
+  activityId: string;
+  groupId: string;
+  courseId: string;
   createdAt: string;
 }
 

@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import type { ActivityDetail, CourseDetail } from '@shared/types';
 import { ActivityIcon } from '@/components/course';
 import { Page } from '@/components/layout/shell';
+import { GroupRestrictionBadge } from '@/components/group-modes';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Dialog, SheetContent } from '@/components/ui/dialog';
@@ -164,6 +165,7 @@ export function ActivityHeader({ activity, actions }: { activity: ActivityDetail
               <EyeOff /> Hidden from students
             </Badge>
           )}
+          <GroupRestrictionBadge groups={activity.groupRestriction} />
           {isStudent && activity.completed && (
             <Badge variant="success">
               <CircleCheck /> Completed

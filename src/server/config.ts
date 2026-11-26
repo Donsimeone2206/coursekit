@@ -13,6 +13,8 @@ export interface CoursekitOptions {
   publicUrl?: string | undefined;
   /** Maximum upload size in megabytes. Defaults to 50. */
   maxUploadMb?: number | undefined;
+  /** Maximum uncompressed size of a SCORM or xAPI package in megabytes. Defaults to 500. */
+  maxPackageMb?: number | undefined;
   /** Folder with the built web UI. `false` serves the API only. */
   webDir?: string | false | undefined;
   /** Run pending database migrations on startup. Defaults to true. */
@@ -30,6 +32,7 @@ export interface ResolvedConfig {
   host: string;
   publicUrl: string | null;
   maxUploadBytes: number;
+  maxPackageBytes: number;
   webDir: string | null;
   migrate: boolean;
   logRequests: boolean;
@@ -42,6 +45,7 @@ export function resolveConfig(options: CoursekitOptions = {}, env: NodeJS.Proces
   const databaseUrl = options.databaseUrl ?? env.DATABASE_URL ?? `sqlite://${resolve(dataDir, 'coursekit.db')}`;
   const publicUrl = options.publicUrl ?? env.COURSEKIT_PUBLIC_URL ?? null;
   const maxUploadMb = options.maxUploadMb ?? Number(env.COURSEKIT_MAX_UPLOAD_MB ?? 50);
+  const maxPackageMb = options.maxPackageMb ?? Number(env.COURSEKIT_MAX_PACKAGE_MB ?? 500);
   const webDir = options.webDir === false ? null : (options.webDir ?? defaultWebDir());
 
   return {
@@ -51,6 +55,7 @@ export function resolveConfig(options: CoursekitOptions = {}, env: NodeJS.Proces
     host: options.host ?? env.HOST ?? '0.0.0.0',
     publicUrl,
     maxUploadBytes: Math.max(1, maxUploadMb) * 1024 * 1024,
+    maxPackageBytes: Math.max(1, Number.isFinite(maxPackageMb) ? maxPackageMb : 500) * 1024 * 1024,
     webDir,
     migrate: options.migrate ?? true,
     logRequests: options.logRequests ?? false,

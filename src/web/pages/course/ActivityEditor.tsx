@@ -14,11 +14,16 @@ import type {
   FileInfo,
   ForumSettings,
   LessonSettings,
+  LtiSettings,
+  GroupMode,
+  PackageSettings,
   QuizSettings,
   ResourceSettings,
 } from '@shared/types';
 import { FileChip, FileDrop } from '@/components/common';
 import { ActivityIcon } from '@/components/course';
+import { LtiFields } from '@/components/lti';
+import { ActivityGroupFields } from '@/components/group-modes';
 import { MarkdownEditor } from '@/components/markdown';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader } from '@/components/ui/dialog';
@@ -35,6 +40,8 @@ const COMPLETION_LABELS: Record<ActivityType, string> = {
   assignment: 'When work is submitted',
   quiz: 'When an attempt is finished (and passed, if a pass mark is set)',
   forum: 'When the student posts',
+  lti: 'When the tool reports it done (or when opened, if ungraded)',
+  package: 'When every part is completed (and passed, if required)',
 };
 
 interface FormState {
@@ -46,6 +53,10 @@ interface FormState {
   dueAt: string;
   maxGrade: string;
   settings: ActivitySettingsMap[ActivityType];
+  /** The activity's own group mode (null: the course default) and the groups it is limited to. */
+  groupMode: GroupMode | null;
+  groupIds: string[];
+  groupIdsChanged: boolean;
 }
 
 function initialState(type: ActivityType): FormState {
@@ -56,8 +67,11 @@ function initialState(type: ActivityType): FormState {
     visible: true,
     completion: DEFAULT_COMPLETION[type],
     dueAt: '',
-    maxGrade: type === 'assignment' ? '100' : '',
+    maxGrade: type === 'assignment' || type === 'package' ? '100' : '',
     settings: structuredClone(DEFAULT_SETTINGS[type]),
+    groupMode: null,
+    groupIds: [],
+    groupIdsChanged: false,
   };
 }
 
@@ -303,6 +317,53 @@ function SettingsFields({ form, setForm, course }: { form: FormState; setForm: (
         </>
       );
     }
+    case 'package': {
+      const s = form.settings as PackageSettings;
+      return (
+        <>
+          <ChoiceCards
+            columns={2}
+            value={s.display}
+            onChange={(display) => setSettings({ display })}
+            options={[
+              { value: 'embed', label: 'On the activity page', description: 'The package plays inside Coursekit.' },
+              { value: 'window', label: 'In a new window', description: 'For packages that need the whole screen.' },
+            ]}
+          />
+          <div className="grid gap-4 sm:grid-cols-3">
+            <Field label="Maximum points">
+              {(p) => <Input {...p} type="number" min={0} value={form.maxGrade} onChange={(e) => set('maxGrade', e.target.value)} />}
+            </Field>
+            <Field label="Attempts allowed">
+              {(p) => (
+                <Select {...p} value={s.attemptsAllowed} onChange={(e) => setSettings({ attemptsAllowed: Number(e.target.value) })}>
+                  <option value={0}>Unlimited</option>
+                  {[1, 2, 3, 4, 5, 10].map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </Select>
+              )}
+            </Field>
+            <Field label="Grade to keep">
+              {(p) => (
+                <Select {...p} value={s.gradingMethod} onChange={(e) => setSettings({ gradingMethod: e.target.value })}>
+                  <option value="highest">Highest attempt</option>
+                  <option value="last">Last attempt</option>
+                </Select>
+              )}
+            </Field>
+          </div>
+          <SwitchField
+            label="Completion needs a pass"
+            description="Automatic completion waits until the package reports a pass, not just a completed status."
+            checked={s.requirePass}
+            onCheckedChange={(requirePass) => setSettings({ requirePass })}
+          />
+        </>
+      );
+    }
     case 'forum': {
       const s = form.settings as ForumSettings;
       return (
@@ -356,6 +417,9 @@ export function ActivityEditor({
         dueAt: toLocalInput(existing.dueAt),
         maxGrade: existing.maxGrade != null ? String(existing.maxGrade) : '',
         settings: existing.settings,
+        groupMode: existing.groupMode ?? null,
+        groupIds: (existing.groupRestriction ?? []).map((g) => g.id),
+        groupIdsChanged: false,
       });
     }
   }, [open, editing, existing, form]);
@@ -370,7 +434,11 @@ export function ActivityEditor({
         completion: form.completion,
         settings: form.settings,
         ...(form.type === 'assignment' || form.type === 'quiz' ? { dueAt: fromLocalInput(form.dueAt) } : {}),
-        ...(form.type === 'assignment' && form.maxGrade !== '' ? { maxGrade: Number(form.maxGrade) } : {}),
+        ...((form.type === 'assignment' || form.type === 'package') && form.maxGrade !== '' ? { maxGrade: Number(form.maxGrade) } : {}),
+        ...(form.type === 'lti' ? { maxGrade: form.maxGrade === '' ? null : Number(form.maxGrade) } : {}),
+        groupMode: form.groupMode,
+        // Only sent when changed, so a restriction to a deleted group isn't lost by saving other fields.
+        ...(form.groupIdsChanged ? { groupIds: form.groupIds } : {}),
       };
       if (editing) {
         await api.patch(`/activities/${activityId}`, body);
@@ -384,6 +452,9 @@ export function ActivityEditor({
       if (!editing && result && form?.type === 'quiz') {
         toast.success('Quiz created. Now add some questions.');
         navigate(`${activityPath(course.slug, result.id)}/questions`);
+      } else if (!editing && result && form?.type === 'package') {
+        toast.success('Activity added. Now upload your package.');
+        navigate(activityPath(course.slug, result.id));
       } else {
         toast.success(editing ? 'Changes saved' : `${ACTIVITY_META[form!.type].label} added`);
       }
@@ -445,6 +516,26 @@ export function ActivityEditor({
                 </Field>
               )}
               <SettingsFields form={form} setForm={setForm} course={course} />
+              {form.type === 'lti' && (
+                <LtiFields
+                  course={course}
+                  sectionId={editing ? undefined : sectionId}
+                  activityId={activityId}
+                  settings={form.settings as LtiSettings}
+                  onSettings={(patch) => setForm({ ...form, settings: { ...form.settings, ...patch } as FormState['settings'] })}
+                  maxGrade={form.maxGrade}
+                  onMaxGrade={(maxGrade) => setForm({ ...form, maxGrade })}
+                  onSelected={() => onOpenChange(false)}
+                />
+              )}
+              <ActivityGroupFields
+                courseId={course.id}
+                courseMode={course.groupMode ?? 'none'}
+                mode={form.groupMode}
+                onModeChange={(groupMode) => setForm({ ...form, groupMode })}
+                groupIds={form.groupIds}
+                onGroupIdsChange={(groupIds) => setForm({ ...form, groupIds, groupIdsChanged: true })}
+              />
               <div className="grid gap-4 border-t pt-5 sm:grid-cols-2">
                 <Field label="Completion tracking">
                   {(p) => (

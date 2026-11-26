@@ -6,10 +6,12 @@ import type { ActivityRow } from '../db/schema.js';
 import { badRequest, notFound, readBody } from '../lib/http.js';
 import { isoDateSchema, markdownSchema } from '../lib/schemas.js';
 import { newId, now, num } from '../lib/util.js';
+import { deleteStoredFiles, packageStorageKeys } from '../packages/service.js';
 import { assertCan, loadCourseAccess } from '../services/access.js';
 import { activityTypes } from '../services/activity-types.js';
+import { activityGroupsSchema, saveActivityGroups } from '../services/group-settings.js';
 
-const DEFAULT_MAX_GRADE: Partial<Record<ActivityType, number>> = { assignment: 100, quiz: 10 };
+const DEFAULT_MAX_GRADE: Partial<Record<ActivityType, number>> = { assignment: 100, quiz: 10, lti: 100, package: 100 };
 
 /** Course structure: sections and the activities inside them. */
 export function contentRoutes(deps: AppDeps) {
@@ -91,12 +93,14 @@ export function contentRoutes(deps: AppDeps) {
       .where('courseId', '=', access.course.id)
       .executeTakeFirst();
     if (num(count?.n) <= 1) throw badRequest('A course needs at least one section.');
+    const packageKeys = await packageStorageKeys(db, { sectionId: c.req.param('sectionId'), courseId: access.course.id });
     const result = await db
       .deleteFrom('sections')
       .where('id', '=', c.req.param('sectionId'))
       .where('courseId', '=', access.course.id)
       .executeTakeFirst();
     if (num(result.numDeletedRows) === 0) throw notFound('Section');
+    await deleteStoredFiles(deps, packageKeys);
     return c.json({ ok: true });
   });
 
@@ -107,7 +111,7 @@ export function contentRoutes(deps: AppDeps) {
       c,
       z.object({
         sectionId: z.string(),
-        type: z.enum(['lesson', 'resource', 'assignment', 'quiz', 'forum']),
+        type: z.enum(['lesson', 'resource', 'assignment', 'quiz', 'forum', 'lti', 'package']),
         title: z.string().trim().min(1, 'Add a title').max(200),
         description: markdownSchema().default(''),
         settings: z.record(z.string(), z.unknown()).default({}),
@@ -115,6 +119,7 @@ export function contentRoutes(deps: AppDeps) {
         maxGrade: z.number().min(0).max(10_000).nullable().optional(),
         completion: z.enum(['none', 'manual', 'auto']).optional(),
         visible: z.boolean().default(true),
+        ...activityGroupsSchema,
       }),
     );
     const section = await db
@@ -132,6 +137,7 @@ export function contentRoutes(deps: AppDeps) {
       throw badRequest(issue ? `${issue.path.map(String).join('.')}: ${issue.message}` : 'Invalid settings');
     }
     const settings = settingsResult.data as ActivitySettingsMap[ActivityType];
+    if (def.validate) await def.validate(db, access.course.id, settings as never);
     if (input.type === 'resource') {
       const s = settings as ActivitySettingsMap['resource'];
       if (s.kind === 'link' && !s.url) throw badRequest('Add the link URL.');
@@ -155,17 +161,30 @@ export function contentRoutes(deps: AppDeps) {
       visible: input.visible ? 1 : 0,
       settings: JSON.stringify(settings),
       dueAt: input.type === 'assignment' || input.type === 'quiz' ? input.dueAt : null,
-      maxGrade: def.graded ? (input.maxGrade ?? DEFAULT_MAX_GRADE[input.type] ?? 100) : null,
+      maxGrade: def.graded
+        ? input.maxGrade === null && def.optionalGrade
+          ? null
+          : (input.maxGrade ?? DEFAULT_MAX_GRADE[input.type] ?? 100)
+        : null,
       completion: input.completion ?? def.defaultCompletion,
       createdBy: user.id,
       createdAt: ts,
       updatedAt: ts,
+      groupMode: input.groupMode ?? null,
     };
-    await db.insertInto('activities').values(activity).execute();
+    await db.transaction().execute(async (trx) => {
+      await trx.insertInto('activities').values(activity).execute();
+      // In the same transaction, so a restricted activity is never briefly open to everyone.
+      if (input.groupIds?.length) await saveActivityGroups(deps, trx, activity, { groupIds: input.groupIds }, user.id);
+    });
     if (input.type === 'resource') {
       const s = settings as ActivitySettingsMap['resource'];
       if (s.fileId)
-        await db.updateTable('files').set({ courseId: access.course.id, context: 'activity' }).where('id', '=', s.fileId).execute();
+        await db
+          .updateTable('files')
+          .set({ courseId: access.course.id, context: 'activity', activityId: activity.id })
+          .where('id', '=', s.fileId)
+          .execute();
     }
     deps.events.emit('activity.created', { activityId: activity.id, courseId: access.course.id, type: activity.type });
     return c.json({ id: activity.id }, 201);

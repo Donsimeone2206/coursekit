@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CircleCheck, CircleX, Eye, Hourglass, Lightbulb, Library, RotateCcw } from 'lucide-react';
 import { useEffect, useMemo, useState, type ComponentProps } from 'react';
 import { toast } from 'sonner';
+import type { SharedQuestionCategory } from '@shared/question-sharing';
 import type { AttemptAnswer, BankQuestion, BankQuestionSummary, Question, QuestionCategory, QuestionResult } from '@shared/types';
 import { InlineMarkdown, Markdown } from '@/components/markdown';
 import { Badge } from '@/components/ui/badge';
@@ -33,6 +34,7 @@ export function useInvalidateBank() {
       qc.invalidateQueries({ queryKey: ['bank-questions', courseId] }),
       qc.invalidateQueries({ queryKey: ['bank-question'] }),
       qc.invalidateQueries({ queryKey: ['slots'] }),
+      qc.invalidateQueries({ queryKey: ['shared-question-categories'] }),
     ]);
 }
 
@@ -50,21 +52,46 @@ export function toSummary(q: BankQuestion, categories: QuestionCategory[] = []):
   };
 }
 
-/** Select of categories, indented to show nesting. */
+/** Select of categories, indented to show nesting. `shared`: other courses' categories, grouped by course. */
 export function CategorySelect({
   categories,
   allLabel,
   exclude,
+  shared,
   ...props
-}: ComponentProps<typeof Select> & { categories: QuestionCategory[]; allLabel?: string; exclude?: string[] }) {
+}: ComponentProps<typeof Select> & {
+  categories: QuestionCategory[];
+  allLabel?: string;
+  exclude?: string[];
+  shared?: SharedQuestionCategory[];
+}) {
   const options = useMemo(() => withDepth(categories).filter((c) => !exclude?.includes(c.id)), [categories, exclude]);
+  const groups = useMemo(() => {
+    const byCourse = new Map<string, { title: string; items: SharedQuestionCategory[] }>();
+    for (const c of shared ?? []) {
+      const group = byCourse.get(c.sharedFrom.courseId) ?? { title: c.sharedFrom.courseTitle, items: [] };
+      group.items.push(c);
+      byCourse.set(c.sharedFrom.courseId, group);
+    }
+    return [...byCourse.entries()].map(([id, g]) => ({ id, title: g.title, items: withDepth(g.items) }));
+  }, [shared]);
+  const list = options.map((c) => (
+    <option key={c.id} value={c.id}>
+      {indentLabel(c)}
+    </option>
+  ));
   return (
     <Select {...props}>
       {allLabel && <option value="">{allLabel}</option>}
-      {options.map((c) => (
-        <option key={c.id} value={c.id}>
-          {indentLabel(c)}
-        </option>
+      {groups.length ? <optgroup label="This course">{list}</optgroup> : list}
+      {groups.map((g) => (
+        <optgroup key={g.id} label={`Shared from ${g.title}`}>
+          {g.items.map((c) => (
+            <option key={c.id} value={c.id}>
+              {indentLabel(c)}
+            </option>
+          ))}
+        </optgroup>
       ))}
     </Select>
   );

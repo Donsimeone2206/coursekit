@@ -7,6 +7,11 @@ import * as groupsCohorts from './migrations/003_groups_cohorts.js';
 import * as completionBadges from './migrations/004_completion_badges.js';
 import * as questionBank from './migrations/005_question_bank.js';
 import * as gradeCategories from './migrations/006_grade_categories.js';
+import * as lti from './migrations/007_lti.js';
+import * as packages from './migrations/008_packages.js';
+import * as groupModes from './migrations/009_group_modes.js';
+import * as questionSharing from './migrations/010_question_sharing.js';
+import * as openBadges from './migrations/011_open_badges.js';
 import { createNodeSqliteDatabase } from './node-sqlite.js';
 import type { Database } from './schema.js';
 import type { DB, DatabaseKind } from './types.js';
@@ -21,6 +26,11 @@ export const migrations: Record<string, Migration> = {
   '004_completion_badges': completionBadges,
   '005_question_bank': questionBank,
   '006_grade_categories': gradeCategories,
+  '007_lti': lti,
+  '008_packages': packages,
+  '009_group_modes': groupModes,
+  '010_question_sharing': questionSharing,
+  '011_open_badges': openBadges,
 };
 
 export async function createDatabase(url: string): Promise<{ db: DB; kind: DatabaseKind }> {

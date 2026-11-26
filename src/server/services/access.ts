@@ -3,6 +3,7 @@ import type { CourseRole } from '../../shared/types.js';
 import type { DB } from '../db/types.js';
 import type { ActivityRow, CourseRow, EnrolmentRow, UserRow } from '../db/schema.js';
 import { forbidden, notFound } from '../lib/http.js';
+import { isAvailableTo } from './group-modes.js';
 
 export interface CourseAccess {
   course: CourseRow;
@@ -66,7 +67,10 @@ export function assertWritable(access: CourseAccess): void {
   if (access.readOnly) throw forbidden('This course is archived and read-only.');
 }
 
-/** Loads an activity and checks that the user may view it (enrolled, and visible unless they can see hidden items). */
+/**
+ * Loads an activity and checks that the user may view it (enrolled, and visible unless they can see hidden items;
+ * for an activity limited to some groups, a member of one of them unless they can see hidden items).
+ */
 export async function loadActivityAccess(db: DB, user: UserRow, activityId: string): Promise<ActivityAccess> {
   const activity = await db.selectFrom('activities').selectAll().where('id', '=', activityId).executeTakeFirst();
   if (!activity) throw notFound('Activity');
@@ -75,6 +79,7 @@ export async function loadActivityAccess(db: DB, user: UserRow, activityId: stri
   if (!access.can('course:viewHidden')) {
     const section = await db.selectFrom('sections').select('visible').where('id', '=', activity.sectionId).executeTakeFirst();
     if (!activity.visible || !section?.visible) throw notFound('Activity');
+    if (!(await isAvailableTo(db, activity.id, user.id))) throw notFound('Activity');
   }
   return { ...access, activity };
 }

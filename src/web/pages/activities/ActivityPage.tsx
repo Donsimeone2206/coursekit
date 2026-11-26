@@ -2,6 +2,7 @@ import { Download, ExternalLink, FileText } from 'lucide-react';
 import { useParams } from 'react-router';
 import type { ActivityDetail, LessonSettings, ResourceSettings } from '@shared/types';
 import { Page } from '@/components/layout/shell';
+import { LtiView } from '@/components/lti';
 import { Markdown } from '@/components/markdown';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
@@ -13,6 +14,7 @@ import NotFoundPage from '../NotFoundPage';
 import { AssignmentView } from './AssignmentView';
 import { ForumView } from './ForumView';
 import { ActivityFrame, useActivity } from './frame';
+import { PackageView } from './PackageView';
 import { QuizView } from './QuizView';
 
 function videoEmbed(url: string): { kind: 'iframe' | 'video' | 'link'; src: string } {
@@ -171,5 +173,13 @@ export default function ActivityPage() {
       return <QuizView activity={activity as ActivityDetail<'quiz'>} />;
     case 'forum':
       return <ForumView activity={activity as ActivityDetail<'forum'>} />;
+    case 'lti':
+      return (
+        <ActivityFrame activity={activity}>
+          <LtiView activity={activity as ActivityDetail<'lti'>} />
+        </ActivityFrame>
+      );
+    case 'package':
+      return <PackageView activity={activity as ActivityDetail<'package'>} />;
   }
 }

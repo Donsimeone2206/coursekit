@@ -3,7 +3,9 @@ import {
   ChevronLeft,
   ChevronRight,
   Copy,
+  Download,
   Eye,
+  FileUp,
   FolderInput,
   FolderPlus,
   Library,
@@ -12,10 +14,12 @@ import {
   Plus,
   Search,
   SearchX,
+  Share2,
   Trash2,
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
+import type { SharedQuestionCategory } from '@shared/question-sharing';
 import type { BankQuestionSummary, Paginated, QuestionCategory, QuestionType } from '@shared/types';
 import { Page } from '@/components/layout/shell';
 import {
@@ -27,12 +31,21 @@ import {
   useInvalidateBank,
 } from '@/components/questions/bank';
 import { formatMark, QUESTION_TYPES, subtree, TYPE_META, withDepth } from '@/components/questions/meta';
+import {
+  CopyDialog,
+  ExportDialog,
+  ImportDialog,
+  ShareDialog,
+  useSharedCategories,
+  type CopySource,
+  type ExportScope,
+} from '@/components/questions/transfer';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardHeader } from '@/components/ui/card';
 import { useConfirm } from '@/components/ui/confirm';
 import { Dialog, DialogBody, DialogContent, DialogFooter, DialogHeader } from '@/components/ui/dialog';
-import { Field, Input, Select, SwitchField, Textarea } from '@/components/ui/form';
+import { Checkbox, Field, Input, Select, SwitchField, Textarea } from '@/components/ui/form';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -202,22 +215,39 @@ function DeleteCategoryDialog({
 
 function CategoryList({
   categories,
+  shared,
   total,
   selected,
   onSelect,
   onNew,
   onEdit,
   onDelete,
+  onExport,
+  onCopy,
+  onShare,
 }: {
   categories: QuestionCategory[];
+  shared: SharedQuestionCategory[];
   total: number;
   selected: string;
   onSelect: (id: string) => void;
   onNew: (parentId: string | null) => void;
   onEdit: (c: QuestionCategory) => void;
   onDelete: (c: QuestionCategory) => void;
+  onExport: (c: QuestionCategory) => void;
+  onCopy: (c: QuestionCategory) => void;
+  onShare: (c: QuestionCategory) => void;
 }) {
   const rows = withDepth(categories);
+  const sharedGroups = useMemo(() => {
+    const groups = new Map<string, { title: string; items: SharedQuestionCategory[] }>();
+    for (const c of shared) {
+      const g = groups.get(c.sharedFrom.courseId) ?? { title: c.sharedFrom.courseTitle, items: [] };
+      g.items.push(c);
+      groups.set(c.sharedFrom.courseId, g);
+    }
+    return [...groups.entries()].map(([id, g]) => ({ id, title: g.title, items: withDepth(g.items) }));
+  }, [shared]);
   const item = (active: boolean) =>
     cn(
       'flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground',
@@ -271,11 +301,58 @@ function CategoryList({
                   <FolderPlus /> Add subcategory
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={() => onShare(c)}>
+                  <Share2 /> Share with other courses
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => onCopy(c)}>
+                  <Copy /> Copy to a course
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => onExport(c)}>
+                  <Download /> Export
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
                 <DropdownMenuItem destructive onSelect={() => onDelete(c)}>
                   <Trash2 /> Delete
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
+          </div>
+        ))}
+        {sharedGroups.map((g) => (
+          <div key={g.id} className="mt-3 border-t pt-3">
+            <p className="flex items-center gap-1.5 px-2.5 pb-1 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
+              <Share2 className="size-3" /> Shared from {g.title}
+            </p>
+            {g.items.map((c) => (
+              <div key={c.id} className="group flex items-center" style={{ paddingLeft: `${c.depth * 14}px` }}>
+                <button
+                  type="button"
+                  className={item(selected === c.id)}
+                  aria-current={selected === c.id ? 'true' : undefined}
+                  onClick={() => onSelect(c.id)}
+                >
+                  <span className="flex-1 truncate" title={c.description || undefined}>
+                    {c.name}
+                  </span>
+                  <span className="text-[11px] tabular-nums">{c.questionCount}</span>
+                </button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="icon-xs" className="shrink-0 text-muted-foreground" aria-label={`Actions for ${c.name}`}>
+                      <MoreHorizontal />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent>
+                    <DropdownMenuItem onSelect={() => onCopy(c)}>
+                      <Copy /> Copy to a course
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => onExport(c)}>
+                      <Download /> Export
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            ))}
           </div>
         ))}
       </nav>
@@ -299,13 +376,28 @@ export default function QuestionBankPage() {
   const [preview, setPreview] = useState<string | null>(null);
   const [categoryEdit, setCategoryEdit] = useState<CategoryEdit | null>(null);
   const [deleting, setDeleting] = useState<QuestionCategory | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [exporting, setExporting] = useState<ExportScope | null>(null);
+  const [copying, setCopying] = useState<CopySource | null>(null);
+  const [sharing, setSharing] = useState<QuestionCategory | null>(null);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
 
   const categories = useCategories(course.id, allowed);
+  const sharedQuery = useSharedCategories(course.id, allowed);
   const cats = useMemo(() => categories.data ?? [], [categories.data]);
-  const selected = cats.find((c) => c.id === categoryId) ?? null;
-  const hasChildren = !!selected && cats.some((c) => c.parentId === selected.id);
+  const shared = useMemo(() => sharedQuery.data ?? [], [sharedQuery.data]);
+  const sharedSelected = shared.find((c) => c.id === categoryId) ?? null;
+  const selected = cats.find((c) => c.id === categoryId) ?? sharedSelected;
+  const hasChildren = !!selected && (sharedSelected ? shared : cats).some((c) => c.parentId === selected.id);
   const filters = { categoryId, includeSub: includeSub && hasChildren, term, type, page };
   useEffect(() => setPage(1), [categoryId, includeSub, term, type]);
+  useEffect(() => setPicked(new Set()), [categoryId]);
+  const childrenOf = (c: QuestionCategory) => (shared.some((s) => s.id === c.id) ? shared : cats).some((x) => x.parentId === c.id);
+  const categoryScope = (c: QuestionCategory) => ({
+    label: `“${c.name}”${childrenOf(c) ? ' and its subcategories' : ''}`,
+    categoryId: c.id,
+    hasSubcategories: childrenOf(c),
+  });
 
   const list = useQuery({
     queryKey: ['bank-questions', course.id, filters],
@@ -382,9 +474,21 @@ export default function QuestionBankPage() {
             random picks.
           </p>
         </div>
-        <Button onClick={() => setEditor({ questionId: null })}>
-          <Plus /> New question
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" onClick={() => setImporting(true)}>
+            <FileUp /> Import
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => setExporting(selected ? categoryScope(selected) : { label: `Every question in the ${course.title} bank` })}
+            disabled={total === 0 && !sharedSelected}
+          >
+            <Download /> Export
+          </Button>
+          <Button onClick={() => setEditor({ questionId: null })}>
+            <Plus /> New question
+          </Button>
+        </div>
       </div>
 
       <div className="grid items-start gap-6 lg:grid-cols-[280px_minmax(0,1fr)]">
@@ -395,12 +499,16 @@ export default function QuestionBankPage() {
         ) : (
           <CategoryList
             categories={cats}
+            shared={shared}
             total={total}
             selected={categoryId}
             onSelect={setCategoryId}
             onNew={(parentId) => setCategoryEdit({ mode: 'new', parentId })}
             onEdit={(category) => setCategoryEdit({ mode: 'edit', category })}
             onDelete={setDeleting}
+            onExport={(c) => setExporting(categoryScope(c))}
+            onCopy={(c) => setCopying(categoryScope(c))}
+            onShare={setSharing}
           />
         )}
 
@@ -449,24 +557,91 @@ export default function QuestionBankPage() {
               <EmptyState
                 icon={Library}
                 title={selected ? `No questions in “${selected.name}” yet` : 'The question bank is empty'}
-                description="Write questions once and reuse them in any quiz in this course."
+                description={
+                  sharedSelected
+                    ? `Questions that ${sharedSelected.sharedFrom.courseTitle} adds here show up for you too.`
+                    : 'Write questions once and reuse them in any quiz in this course, or import them from Moodle XML or GIFT.'
+                }
                 action={
-                  <Button onClick={() => setEditor({ questionId: null })}>
-                    <Plus /> New question
-                  </Button>
+                  sharedSelected ? undefined : (
+                    <Button onClick={() => setEditor({ questionId: null })}>
+                      <Plus /> New question
+                    </Button>
+                  )
                 }
               />
             )
           ) : (
             <Card className={cn('overflow-hidden transition-opacity', list.isPlaceholderData && 'opacity-60')}>
+              {sharedSelected && (
+                <p className="border-b bg-violet-500/[0.06] px-4 py-2.5 text-[13px] text-violet-900 sm:px-5 dark:text-violet-200">
+                  Shared from {sharedSelected.sharedFrom.courseTitle}. Use these questions in your quizzes or copy them to your bank; only
+                  their course can edit them.
+                </p>
+              )}
+              <div className="flex flex-wrap items-center gap-2 border-b px-4 py-2 text-xs text-muted-foreground sm:px-5">
+                <Checkbox
+                  checked={
+                    data.items.every((q) => picked.has(q.id)) ? true : data.items.some((q) => picked.has(q.id)) ? 'indeterminate' : false
+                  }
+                  onCheckedChange={(on) =>
+                    setPicked((prev) => {
+                      const next = new Set(prev);
+                      for (const q of data.items) {
+                        if (on === true) next.add(q.id);
+                        else next.delete(q.id);
+                      }
+                      return next;
+                    })
+                  }
+                  aria-label="Select the questions on this page"
+                />
+                {picked.size > 0 ? (
+                  <>
+                    <span className="mr-auto font-medium text-foreground">{plural(picked.size, 'question')} selected</span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setExporting({ label: `${plural(picked.size, 'selected question')}`, questionIds: [...picked] })}
+                    >
+                      <Download /> Export
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setCopying({ label: `${plural(picked.size, 'selected question')}`, questionIds: [...picked] })}
+                    >
+                      <Copy /> Copy to a course
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => setPicked(new Set())}>
+                      Clear
+                    </Button>
+                  </>
+                ) : (
+                  <span>Select questions to export or copy them</span>
+                )}
+              </div>
               <ul className="divide-y" aria-label="Questions">
                 {data.items.map((q) => (
                   <li key={q.id} className="flex items-start gap-3 px-4 py-3.5 sm:px-5">
-                    <TypeIcon type={q.type} className="mt-0.5" />
+                    <Checkbox
+                      checked={picked.has(q.id)}
+                      onCheckedChange={() =>
+                        setPicked((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(q.id)) next.delete(q.id);
+                          else next.add(q.id);
+                          return next;
+                        })
+                      }
+                      className="mt-2"
+                      aria-label={`Select ${q.name || q.excerpt}`}
+                    />
+                    <TypeIcon type={q.type} className="mt-0.5 hidden sm:grid" />
                     <div className="min-w-0 flex-1">
                       <button
                         type="button"
-                        onClick={() => setEditor({ questionId: q.id })}
+                        onClick={() => (q.sharedFrom ? setPreview(q.id) : setEditor({ questionId: q.id }))}
                         className="block max-w-full text-left text-sm font-medium break-words hover:text-primary focus-visible:text-primary"
                       >
                         {q.name || q.excerpt}
@@ -501,33 +676,50 @@ export default function QuestionBankPage() {
                         <DropdownMenuItem onSelect={() => setPreview(q.id)}>
                           <Eye /> Preview
                         </DropdownMenuItem>
-                        <DropdownMenuItem onSelect={() => setEditor({ questionId: q.id })}>
-                          <Pencil /> Edit
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onSelect={() => duplicate.mutate(q.id)}>
-                          <Copy /> Duplicate
-                        </DropdownMenuItem>
-                        <DropdownMenuSub>
-                          <DropdownMenuSubTrigger>
-                            <FolderInput className="size-4 text-muted-foreground" /> Move to
-                          </DropdownMenuSubTrigger>
-                          <DropdownMenuSubContent className="ck-scrollbar max-h-72 overflow-y-auto">
-                            {withDepth(cats).map((c) => (
-                              <DropdownMenuItem
-                                key={c.id}
-                                disabled={c.id === q.categoryId}
-                                onSelect={() => move.mutate({ id: q.id, to: c.id })}
-                                style={{ paddingLeft: `${10 + c.depth * 12}px` }}
-                              >
-                                {c.name}
-                              </DropdownMenuItem>
-                            ))}
-                          </DropdownMenuSubContent>
-                        </DropdownMenuSub>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem destructive onSelect={() => void askDelete(q)}>
-                          <Trash2 /> Delete
-                        </DropdownMenuItem>
+                        {q.sharedFrom ? (
+                          <DropdownMenuItem onSelect={() => setCopying({ label: `“${q.name || q.excerpt}”`, questionIds: [q.id] })}>
+                            <Copy /> Copy to a course
+                          </DropdownMenuItem>
+                        ) : (
+                          <>
+                            <DropdownMenuItem onSelect={() => setEditor({ questionId: q.id })}>
+                              <Pencil /> Edit
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onSelect={() => duplicate.mutate(q.id)}>
+                              <Copy /> Duplicate
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onSelect={() => setCopying({ label: `“${q.name || q.excerpt}”`, questionIds: [q.id] })}>
+                              <Copy /> Copy to a course
+                            </DropdownMenuItem>
+                          </>
+                        )}
+                        {!q.sharedFrom && (
+                          <DropdownMenuSub>
+                            <DropdownMenuSubTrigger>
+                              <FolderInput className="size-4 text-muted-foreground" /> Move to
+                            </DropdownMenuSubTrigger>
+                            <DropdownMenuSubContent className="ck-scrollbar max-h-72 overflow-y-auto">
+                              {withDepth(cats).map((c) => (
+                                <DropdownMenuItem
+                                  key={c.id}
+                                  disabled={c.id === q.categoryId}
+                                  onSelect={() => move.mutate({ id: q.id, to: c.id })}
+                                  style={{ paddingLeft: `${10 + c.depth * 12}px` }}
+                                >
+                                  {c.name}
+                                </DropdownMenuItem>
+                              ))}
+                            </DropdownMenuSubContent>
+                          </DropdownMenuSub>
+                        )}
+                        {!q.sharedFrom && (
+                          <>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem destructive onSelect={() => void askDelete(q)}>
+                              <Trash2 /> Delete
+                            </DropdownMenuItem>
+                          </>
+                        )}
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </li>
@@ -570,7 +762,7 @@ export default function QuestionBankPage() {
         open={!!editor}
         onOpenChange={(o) => !o && setEditor(null)}
         questionId={editor?.questionId}
-        defaultCategoryId={categoryId || null}
+        defaultCategoryId={sharedSelected ? null : categoryId || null}
       />
       <QuestionPreviewDialog questionId={preview} open={!!preview} onOpenChange={(o) => !o && setPreview(null)} />
       <CategoryDialog courseId={course.id} edit={categoryEdit} categories={cats} onClose={() => setCategoryEdit(null)} />
@@ -583,6 +775,16 @@ export default function QuestionBankPage() {
           if (deleting?.id === categoryId) setCategoryId('');
         }}
       />
+      <ImportDialog
+        courseId={course.id}
+        categories={cats}
+        open={importing}
+        onOpenChange={setImporting}
+        defaultCategoryId={sharedSelected ? null : categoryId || null}
+      />
+      <ExportDialog courseId={course.id} scope={exporting} onOpenChange={(o) => !o && setExporting(null)} />
+      <CopyDialog courseId={course.id} source={copying} onOpenChange={(o) => !o && setCopying(null)} />
+      <ShareDialog category={sharing} onOpenChange={(o) => !o && setSharing(null)} />
     </Page>
   );
 }
